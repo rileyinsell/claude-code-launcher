@@ -1311,7 +1311,7 @@ class FolderViewerForm : Form
     // right-hand "editor" pane (VS Code style: explorer left, content right)
     RichTextBox code;
     Label previewTitle, previewMeta;
-    string previewPath;   // file currently shown; null = nothing selected
+    string previewPath;   // file (or selected folder) currently shown; null = nothing selected
     string previewText;   // shown file's text (no truncation note); null = binary/none
     const int MaxPreviewBytes = 2 * 1024 * 1024;   // preview cap; bigger files truncate
 
@@ -1426,7 +1426,7 @@ class FolderViewerForm : Form
             var d = list.SelectedItems[0].Tag as DirectoryInfo;
             if (d != null)
             {
-                previewPath = null; previewText = null; code.Text = "";
+                previewPath = d.FullName; previewText = null; code.Text = "";
                 previewTitle.Text = d.Name;
                 previewMeta.Text = RelDir(d.FullName)
                     + "  ·  folder — double-click to open in Explorer";
@@ -1491,14 +1491,37 @@ class FolderViewerForm : Form
             catch { }   // clipboard can be locked by another app; just skip
         };
 
+        // Copy the viewed file's (or selected folder's) full path to the clipboard.
+        var pathBtn = new Label {
+            Text = "⧉ PATH", AutoSize = false, Size = new Size(72, 26),
+            TextAlign = ContentAlignment.MiddleCenter, Cursor = Cursors.Hand,
+            ForeColor = ColorTranslator.FromHtml("#E2E8F0"),
+            BackColor = ColorTranslator.FromHtml("#1E293B"),
+            Font = new Font("Segoe UI", 8.5F, FontStyle.Bold) };
+        LauncherForm.RoundCorners(pathBtn, 13);
+        var pathReset = new Timer { Interval = 1200 };
+        pathReset.Tick += (s, e) => { pathReset.Stop(); pathBtn.Text = "⧉ PATH"; };
+        pathBtn.Click += (s, e) => {
+            if (string.IsNullOrEmpty(previewPath)) return;
+            try
+            {
+                Clipboard.SetText(previewPath);
+                pathBtn.Text = "✓ COPIED";
+                pathReset.Stop(); pathReset.Start();
+            }
+            catch { }   // clipboard can be locked by another app; just skip
+        };
+
         fileHeader.Resize += (s, e) => {
             openBtn.Location = new Point(fileHeader.Width - 86, 13);
             copyBtn.Location = new Point(fileHeader.Width - 166, 13);
+            pathBtn.Location = new Point(fileHeader.Width - 246, 13);
         };
         fileHeader.Controls.Add(previewTitle);
         fileHeader.Controls.Add(previewMeta);
         fileHeader.Controls.Add(openBtn);
         fileHeader.Controls.Add(copyBtn);
+        fileHeader.Controls.Add(pathBtn);
 
         code = new RichTextBox {
             Dock = DockStyle.Fill, ReadOnly = true, BorderStyle = BorderStyle.None,

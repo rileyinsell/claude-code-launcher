@@ -77,8 +77,9 @@ the mode. Folders open in Explorer on double-click.
 Single-clicking a file shows it in the right pane (read-only, Consolas, with a
 name/size/lines/modified strip). Binary files (NUL byte in the sample) and the
 tail beyond 2 MB (`MaxPreviewBytes`) aren't rendered — the strip says so instead.
-**⧉ COPY** puts the viewed file's full text on the clipboard; **OPEN ↗** (or
-double-click on the left) opens the file with its default app. The window opens
+**⧉ COPY** puts the viewed file's full text on the clipboard; **⧉ PATH** copies
+its full path (works for a selected folder too); **OPEN ↗** (or double-click on
+the left) opens the file with its default app. The window opens
 at up to 1400×880 (clamped to the working area).
 
 ## Tiles vs rows (the ▦ / ☰ toggle)

@@ -1,0 +1,23 @@
+# Dev Launcher prompt OVERRIDES.  ONE ENTRY PER LINE.  Format:
+#   Name | Folder | What Claude should do first
+# Every folder under C:\Dev automatically gets a tile (newest-modified first) —
+# you do NOT need to add folders here. An entry here overrides a folder's
+# display name and initial prompt. Lines starting with # are ignored.
+# Edit freely, then just reopen the launcher.
+
+chektwo | C:\Dev\chektwo | Run `npm run dev` to start the app (it serves on port 5000), then tell me the local URL once it is up.
+hivemind | C:\Dev\hivemind | Run `pnpm run dev` to start the app (it brings up docker compose then the api + web apps). Tell me the local URLs once they are up.
+mixotrophic | C:\Dev\mixotrophic | Run `pnpm dev` to start the web app, then tell me the local URL once it is up.
+Aithena-Admin | C:\Dev\Aithena-Admin | Start the dev server for this project. Read CLAUDE.md / package.json to find the right command (it is a pnpm monorepo), run it, then tell me the local URL.
+aithena-llm | C:\Dev\aithena-llm | Start this Python project. Check README / requirements.txt to find how to run the backend, start it, then tell me the local URL.
+aquasignal | C:\Dev\aquasignal | Start this app. Check README.md / gsd.sh for how to run the frontend + backend, start them, then tell me the local URLs.
+tpo-dashboard | C:\Dev\tpo-dashboard | Start this project. Read CLAUDE.md / package.json / README to find the right dev command, run it, then tell me the local URL.
+blue-aqua-v2 | C:\Dev\blue-aqua-v2 | Start this project. Read CLAUDE.md / package.json / README to find the right dev command, run it, then tell me the local URL.
+muse | C:\Dev\muse | Open this project. Read SKILL.md to understand what it does and tell me how to run it (it is a set of Python scripts).
+love-in-motion | C:\Dev\love-in-motion-website | Serve this static site locally (e.g. `python -m http.server 8080`) and tell me the local URL.
+aithena-score | C:\Dev\aithena-score | Read CLAUDE.md and the latest file in sessions/ to catch up on history, then continue work. Track this session in sessions/ per the rules in CLAUDE.md, updating it after every turn.
+Dev Launcher | C:\Dev\launcher | Read CLAUDE.md to catch up on this project (a tiny WinForms app that shows a tile per dev project), then continue work.
+logic-app-manager | C:\Dev\logic-app-manager | Read CLAUDE.md and the latest file in sessions/ to catch up on history, then continue work. Track this session in sessions/ per the rules in CLAUDE.md, updating it after every turn.
+aithena-train | C:\Dev\aithena-train | Read CLAUDE.md and the latest file in sessions/ to catch up on history, then continue work. Track this session in sessions/ per the rules in CLAUDE.md, updating it after every turn.
+databricks-phone-integrations | C:\Dev\databricks-phone-integrations | Start this project. Read CLAUDE.md / README / package.json to find the right dev command, run it, then tell me the local URL.
+lintell | C:\Dev\lintell | Start this FastAPI app with `.venv\Scripts\python -m uvicorn app.main:app --port 8100`, then tell me the local URL (web UI is at /ui).

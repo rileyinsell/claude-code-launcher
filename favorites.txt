@@ -1,0 +1,6 @@
+C:\Dev\Aithena-Admin
+C:\Dev\aithena-function-app
+C:\Dev\aithena-train
+C:\Dev\insellerate-databricks
+C:\Dev\insellerate-logic-apps
+C:\Dev\aithena-agent

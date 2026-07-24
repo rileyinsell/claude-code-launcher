@@ -68,11 +68,18 @@ toggled by header pills:
   `node_modules`, `.vs`, `__pycache__`, `bin`, `obj`, `.idea` and caps at 2000
   rows (`MaxFlatFiles`). Rows are color-coded by recency (<24h cyan, <7d normal,
   older dim). Scans once per window, on first switch to the mode.
+The header also has a **search box** (Ctrl+F focuses it): live name search over
+all files *and* folders. One recursive scan builds a cached index (`EnsureIndex`,
+shared with MODIFIED mode, same skips, newest first); results show in the list
+pane — folders in cyan, "folder" in the size column, capped at 500
+(`MaxSearchResults`). Esc or clicking a mode pill clears the search and restores
+the mode. Folders open in Explorer on double-click.
 Single-clicking a file shows it in the right pane (read-only, Consolas, with a
 name/size/lines/modified strip). Binary files (NUL byte in the sample) and the
 tail beyond 2 MB (`MaxPreviewBytes`) aren't rendered — the strip says so instead.
 **⧉ COPY** puts the viewed file's full text on the clipboard; **OPEN ↗** (or
-double-click on the left) opens the file with its default app.
+double-click on the left) opens the file with its default app. The window opens
+at up to 1400×880 (clamped to the working area).
 
 ## Tiles vs rows (the ▦ / ☰ toggle)
 The header has a view toggle next to search. **Tiles** is the classic grid;

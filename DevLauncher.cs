@@ -874,8 +874,8 @@ class LauncherForm : Form
     // ---- search ----
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, string lParam);
-    const int EM_SETCUEBANNER = 0x1501;   // native textbox placeholder text
+    internal static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, string lParam);
+    internal const int EM_SETCUEBANNER = 0x1501;   // native textbox placeholder text
 
     // Show only tiles whose name contains the query. App tiles carry their
     // AppEntry in Tag; the New Project tile (Tag == null) hides during a search.
@@ -1303,7 +1303,10 @@ class FolderViewerForm : Form
     TreeView tree;
     ListView list;
     Label folderModeBtn, modifiedModeBtn, status;
-    bool flatLoaded;   // MODIFIED scans the disk once, on first switch
+    bool flatMode;                 // which pill is active (a search overlays either)
+    TextBox findBox;               // header search across all files + folders
+    List<FileSystemInfo> index;    // every file/folder under root, newest first (lazy)
+    const int MaxSearchResults = 500;
 
     // right-hand "editor" pane (VS Code style: explorer left, content right)
     RichTextBox code;
@@ -1318,8 +1321,10 @@ class FolderViewerForm : Form
         Text = app.Name + " — files";
         BackColor = ColorTranslator.FromHtml("#0A0F1E");
         StartPosition = FormStartPosition.CenterParent;
-        ClientSize = new Size(1080, 640);
-        MinimumSize = new Size(640, 400);
+        // Open big, like the main window: most of the working area, capped.
+        var wa = Screen.PrimaryScreen.WorkingArea;
+        ClientSize = new Size(Math.Min(1400, wa.Width - 60), Math.Min(880, wa.Height - 90));
+        MinimumSize = new Size(720, 420);
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
         // header (width set before anchored children — same rule as the main form)
@@ -1339,8 +1344,44 @@ class FolderViewerForm : Form
         folderModeBtn.Click += (s, e) => SetMode(false);
         modifiedModeBtn.Click += (s, e) => SetMode(true);
 
+        // Search across the whole project: matches file AND folder names, live as
+        // you type, results in the list pane. Esc (or the pills) restores the mode.
+        var findWrap = new Panel {
+            Location = new Point(ClientSize.Width - 468, 18), Size = new Size(220, 30),
+            Anchor = AnchorStyles.Top | AnchorStyles.Right,
+            BackColor = ColorTranslator.FromHtml("#164E63") };
+        LauncherForm.RoundCorners(findWrap, 15);
+        var findInner = new Panel {
+            Location = new Point(1, 1), Size = new Size(218, 28),
+            BackColor = ColorTranslator.FromHtml("#0D1526") };
+        LauncherForm.RoundCorners(findInner, 14);
+        findBox = new TextBox {
+            Location = new Point(12, 6), Size = new Size(194, 18),
+            BackColor = ColorTranslator.FromHtml("#0D1526"),
+            ForeColor = ColorTranslator.FromHtml("#F8FAFC"),
+            BorderStyle = BorderStyle.None, Font = new Font("Segoe UI", 9.5F) };
+        findBox.TextChanged += (s, e) => {
+            string q = findBox.Text.Trim();
+            if (q.Length == 0) SetMode(flatMode);   // restore the underlying mode
+            else RunSearch(q);
+        };
+        findBox.KeyDown += (s, e) => {
+            if (e.KeyCode == Keys.Escape) { findBox.Text = ""; e.SuppressKeyPress = true; }
+        };
+        findBox.HandleCreated += (s, e) => LauncherForm.SendMessage(
+            findBox.Handle, LauncherForm.EM_SETCUEBANNER, (IntPtr)1, "Search files & folders…");
+        findInner.Controls.Add(findBox);
+        findWrap.Controls.Add(findInner);
+
+        // Ctrl+F jumps to the search box from anywhere in the window.
+        KeyPreview = true;
+        KeyDown += (s, e) => {
+            if (e.Control && e.KeyCode == Keys.F) { findBox.Focus(); e.SuppressKeyPress = true; }
+        };
+
         header.Controls.Add(caption);
         header.Controls.Add(title);
+        header.Controls.Add(findWrap);
         header.Controls.Add(folderModeBtn);
         header.Controls.Add(modifiedModeBtn);
 
@@ -1377,13 +1418,24 @@ class FolderViewerForm : Form
         list.Columns.Add("IN FOLDER", 150);
         list.Columns.Add("MODIFIED", 110);
         list.Columns.Add("SIZE", 70, HorizontalAlignment.Right);
+        // Items carry FileInfo/DirectoryInfo in Tag (flat list and search results).
         list.SelectedIndexChanged += (s, e) => {
-            if (list.SelectedItems.Count > 0)
-                Preview((string)list.SelectedItems[0].Tag);
+            if (list.SelectedItems.Count == 0) return;
+            var f = list.SelectedItems[0].Tag as FileInfo;
+            if (f != null) { Preview(f.FullName); return; }
+            var d = list.SelectedItems[0].Tag as DirectoryInfo;
+            if (d != null)
+            {
+                previewPath = null; previewText = null; code.Text = "";
+                previewTitle.Text = d.Name;
+                previewMeta.Text = RelDir(d.FullName)
+                    + "  ·  folder — double-click to open in Explorer";
+            }
         };
         list.ItemActivate += (s, e) => {
-            if (list.SelectedItems.Count > 0)
-                OpenFile((string)list.SelectedItems[0].Tag);
+            if (list.SelectedItems.Count == 0) return;
+            var fsi = list.SelectedItems[0].Tag as FileSystemInfo;
+            if (fsi != null) OpenFile(fsi.FullName);   // folders open in Explorer
         };
 
         // VS Code layout: explorer (tree/list) on the left, file content on the
@@ -1486,12 +1538,15 @@ class FolderViewerForm : Form
 
     void SetMode(bool flat)
     {
-        list.Visible = flat;
-        tree.Visible = !flat;
+        flatMode = flat;
+        // an active search owns the list pane; clearing the box re-enters here
+        if (findBox != null && findBox.Text.Trim().Length > 0) { findBox.Text = ""; return; }
         StyleModeButton(modifiedModeBtn, flat);
         StyleModeButton(folderModeBtn, !flat);
-        if (flat && !flatLoaded) { flatLoaded = true; LoadFlat(); }
-        if (!flat) status.Text = root
+        list.Visible = flat;
+        tree.Visible = !flat;
+        if (flat) LoadFlat();   // also restores the flat list after a search
+        else status.Text = root
             + "   ·   click a file to view it, double-click to open it";
     }
 
@@ -1536,54 +1591,109 @@ class FolderViewerForm : Form
         }
     }
 
-    // ---- MODIFIED mode ----
+    // ---- MODIFIED mode + search (both feed off one lazy index) ----
 
-    void LoadFlat()
+    // One recursive scan, cached for the window's lifetime: every non-hidden file
+    // AND folder under root (SkipDirs pruned), sorted newest-modified first.
+    void EnsureIndex()
     {
-        var files = new List<FileInfo>();
-        Walk(new DirectoryInfo(root), files);
-        var newest = files.OrderByDescending(f => f.LastWriteTime)
-                          .Take(MaxFlatFiles).ToList();
-
-        list.BeginUpdate();
-        list.Items.Clear();
-        var now = DateTime.Now;
-        foreach (var f in newest)
-        {
-            string rel = f.FullName.StartsWith(root, StringComparison.OrdinalIgnoreCase)
-                ? f.FullName.Substring(root.Length).TrimStart('\\') : f.FullName;
-            string relDir = Path.GetDirectoryName(rel);
-            var item = new ListViewItem(new[] {
-                f.Name,
-                string.IsNullOrEmpty(relDir) ? "." : relDir,
-                f.LastWriteTime.ToString("yyyy-MM-dd HH:mm"),
-                FormatSize(f.Length) });
-            item.Tag = f.FullName;
-            // recency glow: <24h cyan, <7d normal, older dim
-            var age = now - f.LastWriteTime;
-            item.ForeColor = age.TotalHours < 24 ? ColorTranslator.FromHtml("#22D3EE")
-                           : age.TotalDays  < 7  ? FileColor : DimColor;
-            list.Items.Add(item);
-        }
-        list.EndUpdate();
-
-        string summary = files.Count + " files · newest first";
-        if (files.Count > MaxFlatFiles) summary += " · showing first " + MaxFlatFiles;
-        status.Text = summary + " · skips " + string.Join(", ", SkipDirs.ToArray())
-            + "   ·   click a file to view it, double-click to open it";
+        if (index != null) return;
+        index = new List<FileSystemInfo>();
+        WalkAll(new DirectoryInfo(root));
+        index.Sort((a, b) => b.LastWriteTime.CompareTo(a.LastWriteTime));
     }
 
-    static void Walk(DirectoryInfo dir, List<FileInfo> acc)
+    void WalkAll(DirectoryInfo dir)
     {
         try
         {
             foreach (var f in dir.GetFiles())
-                if ((f.Attributes & FileAttributes.Hidden) == 0) acc.Add(f);
+                if ((f.Attributes & FileAttributes.Hidden) == 0) index.Add(f);
             foreach (var d in dir.GetDirectories())
                 if ((d.Attributes & FileAttributes.Hidden) == 0 && !SkipDirs.Contains(d.Name))
-                    Walk(d, acc);
+                { index.Add(d); WalkAll(d); }
         }
         catch { }   // unreadable subtree: show what we can
+    }
+
+    string RelDir(string fullName)
+    {
+        string rel = fullName.StartsWith(root, StringComparison.OrdinalIgnoreCase)
+            ? fullName.Substring(root.Length).TrimStart('\\') : fullName;
+        string d = Path.GetDirectoryName(rel);
+        return string.IsNullOrEmpty(d) ? "." : d;
+    }
+
+    // recency glow: <24h cyan, <7d normal, older dim
+    static Color RecencyColor(DateTime now, DateTime t)
+    {
+        var age = now - t;
+        return age.TotalHours < 24 ? ColorTranslator.FromHtml("#22D3EE")
+             : age.TotalDays  < 7  ? FileColor : DimColor;
+    }
+
+    void LoadFlat()
+    {
+        EnsureIndex();
+        list.BeginUpdate();
+        list.Items.Clear();
+        var now = DateTime.Now;
+        int total = 0;
+        foreach (var e in index)
+        {
+            var f = e as FileInfo;
+            if (f == null) continue;
+            total++;
+            if (list.Items.Count >= MaxFlatFiles) continue;   // keep counting for the summary
+            var item = new ListViewItem(new[] {
+                f.Name, RelDir(f.FullName),
+                f.LastWriteTime.ToString("yyyy-MM-dd HH:mm"), FormatSize(f.Length) });
+            item.Tag = f;
+            item.ForeColor = RecencyColor(now, f.LastWriteTime);
+            list.Items.Add(item);
+        }
+        list.EndUpdate();
+
+        string summary = total + " files · newest first";
+        if (total > MaxFlatFiles) summary += " · showing first " + MaxFlatFiles;
+        status.Text = summary + " · skips " + string.Join(", ", SkipDirs.ToArray())
+            + "   ·   click a file to view it, double-click to open it";
+    }
+
+    // Live name search over files and folders; results land in the list pane
+    // (newest first, folders in cyan like the tree).
+    void RunSearch(string q)
+    {
+        EnsureIndex();
+        list.BeginUpdate();
+        list.Items.Clear();
+        var now = DateTime.Now;
+        int files = 0, dirs = 0;
+        foreach (var e in index)
+        {
+            if (e.Name.IndexOf(q, StringComparison.OrdinalIgnoreCase) < 0) continue;
+            var d = e as DirectoryInfo;
+            if (d != null) dirs++; else files++;
+            if (list.Items.Count >= MaxSearchResults) continue;   // keep counting
+            var item = new ListViewItem(new[] {
+                e.Name, RelDir(e.FullName),
+                e.LastWriteTime.ToString("yyyy-MM-dd HH:mm"),
+                d != null ? "folder" : FormatSize(((FileInfo)e).Length) });
+            item.Tag = e;
+            item.ForeColor = d != null ? DirColor : RecencyColor(now, e.LastWriteTime);
+            list.Items.Add(item);
+        }
+        list.EndUpdate();
+        tree.Visible = false;
+        list.Visible = true;
+        StyleModeButton(folderModeBtn, false);
+        StyleModeButton(modifiedModeBtn, false);
+
+        int total = files + dirs;
+        string txt = total + " matches for \"" + q + "\" (" + files + " files, "
+            + dirs + " folders)";
+        if (total > MaxSearchResults) txt += " · showing first " + MaxSearchResults;
+        status.Text = txt + "   ·   Esc clears";
     }
 
     // ---- file preview (right pane) ----

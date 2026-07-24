@@ -149,6 +149,13 @@ Build target is .NET Framework `csc` (always present on Windows). `winexe` = no 
      consumed by PowerShell itself. So: prompt = `PsPromptArg` (both layers), name/path =
      `PsSingleQuote` (curly + `'`->`''` only). Don't collapse these back to a bare
      `.Replace("'", "''")`.
+- **Launching the launcher from inside a Claude Code session used to taint every tab.**
+  A DevLauncher started from a Claude session inherits `CLAUDE_CODE_CHILD_SESSION` (new
+  claude thinks it's a nested child → "Transcript saving is off" warning) plus the
+  color-suppressing vars Claude Code sets for subprocesses (claude UI loses its colors) —
+  and passes them to every tab it opens. `Launch()` now scrubs `CLAUDE*`, `NO_COLOR`, and
+  `FORCE_COLOR` from the tab's environment (the `envScrub` block) before starting claude,
+  so launches are clean no matter where the launcher was started from.
 - **Huge prompts can't ride the command line.** Windows caps a command line around 32K chars;
   a long pasted prompt (UTF-16LE + Base64 into `-EncodedCommand`) blows past it and
   `Process.Start` fails with Win32 error 206, which Windows reports as *"The filename or

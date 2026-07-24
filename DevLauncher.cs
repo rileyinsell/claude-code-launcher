@@ -1233,10 +1233,22 @@ class LauncherForm : Form
         }
         if (promptExpr == null) promptExpr = "'" + escaped.Replace("'", "''") + "'";
 
+        // If the launcher itself was started from inside a Claude Code session (or
+        // any process that was), the new tab inherits that session's environment:
+        // CLAUDE_CODE_CHILD_SESSION makes the new claude think it's a nested child
+        // (transcript saving off), and the color-suppressing vars Claude Code sets
+        // for subprocesses (NO_COLOR/FORCE_COLOR) kill its colored UI. Scrub them
+        // in the tab before starting claude so launches are always clean.
+        const string envScrub =
+            "foreach ($__v in @(Get-ChildItem Env:).Name) { if ($__v -like 'CLAUDE*') "
+            + "{ Remove-Item ('Env:' + $__v) -ErrorAction SilentlyContinue } }; "
+            + "Remove-Item Env:NO_COLOR, Env:FORCE_COLOR -ErrorAction SilentlyContinue; ";
+
         // `--` ends claude's option parsing so a prompt that starts with '-'
         // (e.g. a pasted markdown bullet) is taken as the prompt, not a flag.
         string inner = "$Host.UI.RawUI.WindowTitle = '" + name + "'; "
                      + "Set-Location -LiteralPath '" + path + "'; "
+                     + envScrub
                      + readCmd
                      + "claude" + model + " -- " + promptExpr;
         string enc = Convert.ToBase64String(Encoding.Unicode.GetBytes(inner));

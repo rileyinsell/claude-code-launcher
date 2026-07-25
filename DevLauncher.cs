@@ -990,9 +990,9 @@ class LauncherForm : Form
     // Model choices offered in the launch dialog. Labels are what's shown;
     // ids are passed to `claude --model`. Empty id = no flag (CLI default).
     static readonly string[] ModelLabels = {
-        "Default model", "Opus 4.8", "Fable 5", "Sonnet 5", "Haiku 4.5" };
+        "Default model", "Opus 5", "Opus 4.8", "Fable 5", "Sonnet 5", "Haiku 4.5" };
     static readonly string[] ModelIds = {
-        "", "claude-opus-4-8", "claude-fable-5", "claude-sonnet-5", "claude-haiku-4-5" };
+        "", "claude-opus-5", "claude-opus-4-8", "claude-fable-5", "claude-sonnet-5", "claude-haiku-4-5" };
 
     // Flat dark-theme dialog button. The default WinForms button renders black
     // text on the system grey and is unreadable on these dark dialogs.

@@ -46,13 +46,18 @@ The ✎ button on tiles/pills opens a launch dialog with these fields:
 - **Read CLAUDE.md first (checkbox, default ON)** — prepends
   `Read CLAUDE.md first.` to the prompt. Skipped automatically if the prompt
   already mentions CLAUDE.md (the default prompts do), so it never stutters.
+- **Handoff (checkbox, default OFF)** — prepends a "use the last available
+  handoff to catch up" instruction. Sits *after* the CLAUDE.md lead-in and
+  *before* the initial prompt.
 - **Prompt (multiline)** — empty falls back to the project's default prompt,
   so the dialog can be used just to pick a model or rename the tab.
 
 Prompt composition order matters and is fixed in `LaunchWithPrompt()`:
-`/loop <N>m Read CLAUDE.md first. <prompt>` — claude only parses a slash command
-at position 0, so `/loop` must come first and the CLAUDE.md instruction rides
-*inside* the looped prompt (loop being on can't break it).
+`/loop <N>m Read CLAUDE.md first. Use the last available handoff… <prompt>` —
+claude only parses a slash command at position 0, so `/loop` must come first and
+the CLAUDE.md + handoff instructions ride *inside* the looped prompt (loop being
+on can't break it). The prepends are applied in reverse of display order
+(handoff first, then CLAUDE.md, then `/loop`) so the final text reads top-down.
 
 Dialog buttons are custom flat dark-theme buttons (`MakeDialogButton`) — default
 WinForms buttons render black-on-grey and are unreadable on the dark forms.

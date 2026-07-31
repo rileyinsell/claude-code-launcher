@@ -24,10 +24,12 @@ class AppEntry
 
 // What the launch dialog hands back. Null prompt/model/tab all have defaults.
 // LoopMinutes 0 = no loop; ReadClaudeMd prepends a "Read CLAUDE.md first." lead-in.
+// Handoff prepends a "use the last available handoff" lead-in (after CLAUDE.md).
 class LaunchOptions
 {
     public string Prompt = "", Model = "", TabTitle = "";
     public bool ReadClaudeMd;
+    public bool Handoff;
     public int LoopMinutes;
 }
 
@@ -978,12 +980,16 @@ class LauncherForm : Form
         if (opts == null) return;                   // cancelled
         string prompt = opts.Prompt.Length > 0 ? opts.Prompt : app.Prompt;
 
-        // "Read CLAUDE.md" is prepended to the prompt TEXT, and the /loop prefix
-        // goes in FRONT of that — claude only parses a slash command at position 0,
-        // so with both on the result is: /loop <N>m Read CLAUDE.md first. <prompt>
-        // (the CLAUDE.md instruction rides inside the looped prompt and survives).
-        // Skip the prepend if the prompt already mentions CLAUDE.md (the default
-        // prompts do) so it doesn't stutter.
+        // Lead-ins are prepended to the prompt TEXT (last one added ends up first),
+        // and the /loop prefix goes in FRONT of everything — claude only parses a
+        // slash command at position 0. Desired final order is:
+        //   /loop <N>m  Read CLAUDE.md first.  Use the last available handoff…  <prompt>
+        // so prepend handoff first, then CLAUDE.md, then /loop (reverse of display).
+        // (both instructions ride inside the looped prompt and survive.)
+        if (opts.Handoff)
+            prompt = "Use the last available handoff to catch up on where things left off. " + prompt;
+        // Skip the CLAUDE.md prepend if the prompt already mentions CLAUDE.md (the
+        // default prompts do) so it doesn't stutter.
         if (opts.ReadClaudeMd
             && prompt.IndexOf("CLAUDE.md", StringComparison.OrdinalIgnoreCase) < 0)
             prompt = "Read CLAUDE.md first. " + prompt;
@@ -1095,6 +1101,12 @@ class LauncherForm : Form
                 ForeColor = fieldFore, BackColor = Color.Transparent,
                 Font = new Font("Segoe UI", 9.5F), Cursor = Cursors.Hand };
 
+            var handoffCheck = new CheckBox {
+                Text = "Handoff", AutoSize = true, Checked = false,
+                Location = new Point(452, 158),
+                ForeColor = fieldFore, BackColor = Color.Transparent,
+                Font = new Font("Segoe UI", 9.5F), Cursor = Cursors.Hand };
+
             var promptLabel = SectionLabel("INITIAL PROMPT", 24, 172);
             var box = new TextBox {
                 Location = new Point(24, 192), Size = new Size(592, 230),
@@ -1127,6 +1139,7 @@ class LauncherForm : Form
             dlg.Controls.Add(loopBox);
             dlg.Controls.Add(minLabel);
             dlg.Controls.Add(claudeMdCheck);
+            dlg.Controls.Add(handoffCheck);
             dlg.Controls.Add(promptLabel);
             dlg.Controls.Add(box);
             dlg.Controls.Add(hint);
@@ -1142,6 +1155,7 @@ class LauncherForm : Form
                 Model = ModelIds[modelBox.SelectedIndex],
                 TabTitle = tabBox.Text.Trim(),
                 ReadClaudeMd = claudeMdCheck.Checked,
+                Handoff = handoffCheck.Checked,
                 LoopMinutes = loopCheck.Checked ? (int)loopBox.Value : 0 };
         }
     }

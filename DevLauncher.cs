@@ -148,6 +148,15 @@ class LauncherForm : Form
         header.Controls.Add(tilesBtn);
         header.Controls.Add(rowsBtn);
 
+        // Secret grabber: gold 🔑 button left of the view toggle. Opens a dialog
+        // that pulls a named secret from the production Key Vault via the az CLI.
+        var keyBtn = MakeViewButton("🔑", new Point(ClientSize.Width - 352, 20));
+        keyBtn.BackColor = ColorTranslator.FromHtml("#CA8A04");
+        keyBtn.ForeColor = Color.White;
+        tip.SetToolTip(keyBtn, "Secret grabber — fetch a Key Vault secret");
+        keyBtn.Click += (s, e) => new SecretGrabberForm().Show(this);
+        header.Controls.Add(keyBtn);
+
         // favorites bar: pill per starred project, newest-modified first.
         // Hidden until something is starred. AutoSize so pills can wrap to a
         // second row without clipping.
@@ -1009,7 +1018,7 @@ class LauncherForm : Form
     }
 
     // Small cyan section caption for the launch dialog.
-    static Label SectionLabel(string text, int x, int y)
+    internal static Label SectionLabel(string text, int x, int y)
     {
         return new Label {
             Text = text, AutoSize = true, Location = new Point(x, y),
@@ -1797,5 +1806,229 @@ class FolderViewerForm : Form
         if (b < 1048576) return (b / 1024.0).ToString("0.#") + " KB";
         if (b < 1073741824) return (b / 1048576.0).ToString("0.#") + " MB";
         return (b / 1073741824.0).ToString("0.##") + " GB";
+    }
+}
+
+// The 🔑 "secret grabber": type a secret name, and it runs
+//   az keyvault secret show --vault-name ins-prod-lg-kv-usw --name <name> --query value -o tsv
+// against the Insellerate production Key Vault (see the keyvault-get-secret skill),
+// then shows the value MASKED with reveal (👁) and copy (⧉) actions. The value is
+// only ever held in memory / put on the clipboard on request — never written to disk.
+class SecretGrabberForm : Form
+{
+    // Production Logic App Key Vault (RBAC mode). Requires an interactive
+    // `az login` as a principal with the Key Vault Secrets User/Officer role.
+    const string VaultName = "ins-prod-lg-kv-usw";
+
+    TextBox nameBox, valueBox;
+    Button getBtn, revealBtn, copyBtn;
+    Label status;
+    string currentValue;   // last fetched secret, in memory only
+    bool revealed;
+    readonly Timer copyReset = new Timer { Interval = 1200 };
+
+    public SecretGrabberForm()
+    {
+        Text = "Secret Grabber";
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        StartPosition = FormStartPosition.CenterParent;
+        MaximizeBox = false; MinimizeBox = false;
+        ClientSize = new Size(600, 336);
+        BackColor = ColorTranslator.FromHtml("#0A0F1E");
+        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+
+        Color fieldBack = ColorTranslator.FromHtml("#111C33");
+        Color fieldFore = ColorTranslator.FromHtml("#E2E8F0");
+
+        var header = new Label {
+            Text = "🔑  SECRET GRABBER",
+            ForeColor = ColorTranslator.FromHtml("#FBBF24"),
+            Font = new Font("Segoe UI", 14F, FontStyle.Bold),
+            AutoSize = true, Location = new Point(22, 16), BackColor = Color.Transparent };
+        var divider = new Panel {
+            Location = new Point(24, 50), Size = new Size(552, 2),
+            BackColor = ColorTranslator.FromHtml("#155E75") };
+
+        var vaultLabel = LauncherForm.SectionLabel("VAULT", 24, 64);
+        var vaultVal = new Label {
+            Text = VaultName, AutoSize = true, Location = new Point(24, 82),
+            ForeColor = ColorTranslator.FromHtml("#94A3B8"),
+            Font = new Font("Consolas", 10F), BackColor = Color.Transparent };
+
+        var nameLabel = LauncherForm.SectionLabel("SECRET NAME", 24, 116);
+        nameBox = new TextBox {
+            Location = new Point(24, 136), Size = new Size(440, 28),
+            Text = "od-cred-ef3a2f9fc2",
+            BackColor = fieldBack, ForeColor = fieldFore,
+            BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 10.5F) };
+        nameBox.KeyDown += (s, e) => {
+            if (e.KeyCode == Keys.Enter) { DoGet(); e.SuppressKeyPress = true; }
+        };
+
+        getBtn = FlatButton("▶  GET", ColorTranslator.FromHtml("#0891B2"),
+            new Point(476, 135), new Size(100, 30));
+        getBtn.Click += (s, e) => DoGet();
+
+        var valueLabel = LauncherForm.SectionLabel("VALUE", 24, 180);
+        valueBox = new TextBox {
+            Location = new Point(24, 200), Size = new Size(330, 28),
+            ReadOnly = true, UseSystemPasswordChar = true,
+            BackColor = ColorTranslator.FromHtml("#0D1526"), ForeColor = fieldFore,
+            BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 10.5F) };
+
+        revealBtn = FlatButton("👁", ColorTranslator.FromHtml("#1E293B"),
+            new Point(362, 200), new Size(44, 28));
+        revealBtn.Click += (s, e) => {
+            revealed = !revealed;
+            valueBox.UseSystemPasswordChar = !revealed;
+            revealBtn.Text = revealed ? "🙈" : "👁";
+        };
+
+        copyBtn = FlatButton("⧉  COPY", ColorTranslator.FromHtml("#1E293B"),
+            new Point(414, 200), new Size(100, 28));
+        copyReset.Tick += (s, e) => { copyReset.Stop(); copyBtn.Text = "⧉  COPY"; };
+        copyBtn.Click += (s, e) => {
+            if (string.IsNullOrEmpty(currentValue)) return;
+            try
+            {
+                Clipboard.SetText(currentValue);
+                copyBtn.Text = "✓  COPIED";
+                copyReset.Stop(); copyReset.Start();
+            }
+            catch { }   // clipboard can be locked by another app; just skip
+        };
+
+        status = new Label {
+            Text = "Enter a secret name and click GET. Requires an interactive "
+                 + "az login with Key Vault Secrets access.",
+            AutoSize = false, Location = new Point(24, 244), Size = new Size(552, 74),
+            ForeColor = ColorTranslator.FromHtml("#64748B"),
+            Font = new Font("Segoe UI", 9F), BackColor = Color.Transparent };
+
+        Controls.Add(header);
+        Controls.Add(divider);
+        Controls.Add(vaultLabel);
+        Controls.Add(vaultVal);
+        Controls.Add(nameLabel);
+        Controls.Add(nameBox);
+        Controls.Add(getBtn);
+        Controls.Add(valueLabel);
+        Controls.Add(valueBox);
+        Controls.Add(revealBtn);
+        Controls.Add(copyBtn);
+        Controls.Add(status);
+        ActiveControl = nameBox;
+        nameBox.SelectAll();
+    }
+
+    // Flat dark-theme button (the default WinForms button is black-on-grey and
+    // unreadable on these dark dialogs).
+    static Button FlatButton(string text, Color back, Point at, Size size)
+    {
+        var b = new Button {
+            Text = text, Location = at, Size = size,
+            ForeColor = Color.White, BackColor = back,
+            FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand,
+            Font = new Font("Segoe UI Semibold", 9.5F) };
+        b.FlatAppearance.BorderSize = 0;
+        b.FlatAppearance.MouseOverBackColor = ControlPaint.Light(back, 0.25f);
+        return b;
+    }
+
+    void SetStatus(string text, Color color)
+    {
+        status.ForeColor = color;
+        status.Text = text;
+    }
+
+    // Kick off the az CLI call on a background thread so the UI never freezes,
+    // then marshal the result back with BeginInvoke.
+    void DoGet()
+    {
+        string name = (nameBox.Text ?? "").Trim();
+        if (name.Length == 0)
+        {
+            SetStatus("Enter a secret name first.", ColorTranslator.FromHtml("#F87171"));
+            return;
+        }
+        // Key Vault secret names are restricted to [0-9a-zA-Z-]. Enforcing that here
+        // also makes it safe to pass the name straight through cmd.exe (no injection).
+        foreach (char c in name)
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z')
+                || (c >= 'A' && c <= 'Z') || c == '-'))
+            {
+                SetStatus("Invalid name: Key Vault secret names may only contain "
+                    + "letters, digits, and hyphens.", ColorTranslator.FromHtml("#F87171"));
+                return;
+            }
+
+        currentValue = null;
+        valueBox.Text = "";
+        revealed = false;
+        valueBox.UseSystemPasswordChar = true;
+        revealBtn.Text = "👁";
+        getBtn.Enabled = false;
+        getBtn.Text = "…";
+        SetStatus("Fetching " + name + " from " + VaultName + " …",
+            ColorTranslator.FromHtml("#38BDF8"));
+
+        string args = "/c az keyvault secret show --vault-name " + VaultName
+                    + " --name " + name + " --query value -o tsv";
+
+        var t = new System.Threading.Thread(() =>
+        {
+            string outp = "", err = "";
+            int code = -1;
+            bool timedOut = false;
+            try
+            {
+                var psi = new ProcessStartInfo("cmd.exe", args)
+                {
+                    UseShellExecute = false, CreateNoWindow = true,
+                    RedirectStandardOutput = true, RedirectStandardError = true
+                };
+                using (var p = Process.Start(psi))
+                {
+                    // Secret payloads are tiny, so a sequential read won't deadlock.
+                    outp = p.StandardOutput.ReadToEnd();
+                    err = p.StandardError.ReadToEnd();
+                    if (!p.WaitForExit(60000)) { timedOut = true; try { p.Kill(); } catch { } }
+                    else code = p.ExitCode;
+                }
+            }
+            catch (Exception ex) { err = ex.Message; }
+
+            try { BeginInvoke((Action)(() => Done(name, outp, err, code, timedOut))); }
+            catch { }   // form closed before the call returned
+        }) { IsBackground = true };
+        t.Start();
+    }
+
+    void Done(string name, string outp, string err, int code, bool timedOut)
+    {
+        getBtn.Enabled = true;
+        getBtn.Text = "▶  GET";
+
+        if (timedOut)
+        {
+            SetStatus("Timed out after 60s waiting for az. Is the CLI installed and logged in?",
+                ColorTranslator.FromHtml("#F87171"));
+            return;
+        }
+
+        string val = (outp ?? "").TrimEnd('\r', '\n');
+        if (code == 0 && val.Length > 0)
+        {
+            currentValue = val;
+            valueBox.Text = val;   // stays masked until 👁
+            SetStatus("✓ Retrieved \"" + name + "\".  Hidden — click 👁 to reveal, "
+                + "⧉ COPY to copy to the clipboard.", ColorTranslator.FromHtml("#34D399"));
+        }
+        else
+        {
+            string msg = (err ?? "").Trim();
+            if (msg.Length == 0) msg = val.Length == 0 ? "No value returned." : val;
+            SetStatus("✗ " + msg, ColorTranslator.FromHtml("#F87171"));
+        }
     }
 }

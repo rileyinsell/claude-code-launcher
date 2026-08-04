@@ -13,6 +13,9 @@ telling it to auto-start the app.
 | `recent.txt` | Auto-written on every launch (`name|ticks` per line). No longer drives startup ordering (tiles sort by folder modified date); a launch still moves its tile to the front for the current session. Safe to delete. |
 | `favorites.txt` | Starred folder paths, one per line. Written when a tile's ★ button is toggled. Starred projects show as pills in a favorites bar under the header, ordered by folder modified date. Safe to delete (nothing starred). |
 | `view.txt` | Grid view mode: `tiles` or `rows`. Written by the ▦/☰ toggle in the header. Safe to delete (defaults to tiles). |
+| `.env` | **Local config & secrets — git-ignored.** `KEY=VALUE` lines read by the `Env` class (`.env` next to the exe, loaded once, lazily). Holds the Logic Apps repo path + Azure ids (subscription/resource group/site/location) and the Key Vault name. Missing file/key falls back to a literal in code, so the app still runs without it. Copy `.env.example` → `.env` and fill in. |
+| `.env.example` | Committed template for `.env` with placeholder values. |
+| `logic-apps.txt` | **Git-ignored cache** for the 🧩 Logic Apps launcher: one workflow name per line. Written by the ↻ REPULL button (and auto-created on first open if absent) so the repo isn't rescanned every time. Re-sorted case-insensitively on load. Safe to delete (repull rebuilds it). |
 | `DevLauncher.ico` | App icon (blue rounded tile + ⚡). Embedded in the exe and used by the shortcuts. |
 | `AppLauncher.ps1` | **Legacy / unused.** The original PowerShell+WPF version. The exe no longer reads it. Kept for reference; safe to delete. |
 | `Launch.vbs` | **Legacy / unused.** Old no-flash launcher for the PS1 version. |
@@ -86,6 +89,31 @@ tail beyond 2 MB (`MaxPreviewBytes`) aren't rendered — the strip says so inste
 its full path (works for a selected folder too); **OPEN ↗** (or double-click on
 the left) opens the file with its default app. The window opens
 at up to 1400×880 (clamped to the working area).
+
+## Logic Apps launcher (the 🧩 button)
+Azure-blue 🧩 button in the header, left of the 🔑 secret grabber. Opens
+`LogicAppsForm` — a searchable list of every Standard Logic App workflow;
+**single-clicking a name opens that workflow's designer in the Azure portal** in
+the default browser. Search box filters live (case-insensitive substring), Esc
+clears, Enter opens the selected/top match. Live count shown ("278 workflows",
+"12 workflows (of 278)" while filtering).
+
+- **Workflow list is cached**, not rescanned each open. Names are the immediate
+  subfolders of the logic-apps repo (`LOGIC_APPS_REPO` in `.env`, ~278 of them).
+  The list lives in `logic-apps.txt` next to the exe; on open it loads from there
+  (auto-repulls once if the cache is missing). The **↻ REPULL** button rescans the
+  repo (`Directory.GetDirectories`, skips dot-folders, sorts) and rewrites the
+  cache — use it after workflows are added/renamed (rare).
+- **Deep-link URL** is built in `OpenWorkflow()` from `.env` values
+  (`AZURE_SUBSCRIPTION_ID` / `AZURE_RESOURCE_GROUP` / `AZURE_LOGIC_APP_SITE` /
+  `AZURE_LOGIC_APP_LOCATION`). The resource path uses `%2F`-escaped slashes; the
+  workflow name and location go through `Uri.EscapeDataString` (a no-op for the
+  current `[A-Za-z0-9_-]` names, correct if a space ever appears). Verified
+  byte-exact against the known-good `Agave_AutoCompleteCalls-Migrated` link.
+- **Config is `.env`-only** — nothing sensitive is compiled into the source. The
+  literals passed to `Env.Get(...)` are non-secret fallbacks (empty for the
+  Azure ids), so a missing `.env` degrades gracefully with a "configure .env"
+  status rather than leaking values.
 
 ## Tiles vs rows (the ▦ / ☰ toggle)
 The header has a view toggle next to search. **Tiles** is the classic grid;

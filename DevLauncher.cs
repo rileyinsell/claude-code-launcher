@@ -33,6 +33,48 @@ class LaunchOptions
     public int LoopMinutes;
 }
 
+// Tiny .env reader (KEY=VALUE, # comments, optional surrounding quotes). Keeps
+// environment-specific values — repo path, Azure ids, vault name — out of the
+// committed source. Reads .env next to the exe once, lazily. Missing file / key
+// falls back to the supplied default, so the app still runs without a .env.
+static class Env
+{
+    static Dictionary<string, string> map;
+
+    static void Load()
+    {
+        map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            string path = Path.Combine(
+                Path.GetDirectoryName(Application.ExecutablePath), ".env");
+            if (!File.Exists(path)) return;
+            foreach (string raw in File.ReadAllLines(path))
+            {
+                string line = raw.Trim();
+                if (line.Length == 0 || line[0] == '#') continue;
+                int eq = line.IndexOf('=');
+                if (eq <= 0) continue;
+                string key = line.Substring(0, eq).Trim();
+                string val = line.Substring(eq + 1).Trim();
+                if (val.Length >= 2 &&
+                    ((val[0] == '"' && val[val.Length - 1] == '"') ||
+                     (val[0] == '\'' && val[val.Length - 1] == '\'')))
+                    val = val.Substring(1, val.Length - 2);
+                map[key] = val;
+            }
+        }
+        catch { map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase); }
+    }
+
+    public static string Get(string key, string fallback)
+    {
+        if (map == null) Load();
+        string v;
+        return map.TryGetValue(key, out v) && v.Length > 0 ? v : fallback;
+    }
+}
+
 static class Program
 {
     [STAThread]
@@ -158,6 +200,16 @@ class LauncherForm : Form
         tip.SetToolTip(keyBtn, "Secret grabber — fetch a Key Vault secret");
         keyBtn.Click += (s, e) => new SecretGrabberForm().Show(this);
         header.Controls.Add(keyBtn);
+
+        // Logic Apps launcher: azure-blue 🧩 button left of the key. Opens a
+        // searchable list of every Standard Logic App workflow; clicking a name
+        // opens its designer in the Azure portal.
+        var logicBtn = MakeViewButton("🧩", new Point(ClientSize.Width - 392, 20));
+        logicBtn.BackColor = ColorTranslator.FromHtml("#2563EB");
+        logicBtn.ForeColor = Color.White;
+        tip.SetToolTip(logicBtn, "Logic Apps — open a workflow in the Azure portal");
+        logicBtn.Click += (s, e) => new LogicAppsForm().Show(this);
+        header.Controls.Add(logicBtn);
 
         // favorites bar: pill per starred project, newest-modified first.
         // Hidden until something is starred. AutoSize so pills can wrap to a
@@ -1267,13 +1319,22 @@ class LauncherForm : Form
             + "{ Remove-Item ('Env:' + $__v) -ErrorAction SilentlyContinue } }; "
             + "Remove-Item Env:NO_COLOR, Env:FORCE_COLOR -ErrorAction SilentlyContinue; ";
 
+        // The app named "mixotrophic" launches under the SECOND Claude account:
+        // `claudeba` is a PowerShell profile function that points CLAUDE_CONFIG_DIR
+        // at C:\Users\User\.claude-ba and adds --dangerously-skip-permissions. It
+        // sets its own config dir when invoked, which is AFTER envScrub wipes CLAUDE*
+        // vars in the tab, so the account switch survives. Every other app stays on
+        // `claude` (the default account). Match by name only, case-insensitively.
+        string cli = string.Equals(a.Name, "mixotrophic", StringComparison.OrdinalIgnoreCase)
+            ? "claudeba" : "claude";
+
         // `--` ends claude's option parsing so a prompt that starts with '-'
         // (e.g. a pasted markdown bullet) is taken as the prompt, not a flag.
         string inner = "$Host.UI.RawUI.WindowTitle = '" + name + "'; "
                      + "Set-Location -LiteralPath '" + path + "'; "
                      + envScrub
                      + readCmd
-                     + "claude" + model + " -- " + promptExpr;
+                     + cli + model + " -- " + promptExpr;
         string enc = Convert.ToBase64String(Encoding.Unicode.GetBytes(inner));
 
         // Prefer Windows Terminal (named, suppressed-title tab); fall back to PowerShell.
@@ -1832,7 +1893,8 @@ class SecretGrabberForm : Form
 {
     // Production Logic App Key Vault (RBAC mode). Requires an interactive
     // `az login` as a principal with the Key Vault Secrets User/Officer role.
-    const string VaultName = "ins-prod-lg-kv-usw";
+    // Name comes from .env (KEYVAULT_NAME); the literal is only a fallback.
+    static readonly string VaultName = Env.Get("KEYVAULT_NAME", "ins-prod-lg-kv-usw");
 
     TextBox nameBox, valueBox;
     Button getBtn, revealBtn, copyBtn;
@@ -2044,5 +2106,274 @@ class SecretGrabberForm : Form
             if (msg.Length == 0) msg = val.Length == 0 ? "No value returned." : val;
             SetStatus("✗ " + msg, ColorTranslator.FromHtml("#F87171"));
         }
+    }
+}
+
+// The 🧩 Logic Apps launcher: lists every Standard Logic App workflow (one per
+// immediate subfolder of the logic-apps repo) with a live search box; clicking a
+// name opens that workflow's designer in the Azure portal in the default browser.
+//
+// The workflow list is CACHED in logic-apps.txt next to the exe so the repo is
+// NOT rescanned on every open — the ↻ REPULL button rescans the repo on demand.
+// All environment-specific values (repo path, subscription, resource group, site,
+// location) come from .env, so nothing sensitive lives in the committed source.
+class LogicAppsForm : Form
+{
+    readonly string repoPath = Env.Get("LOGIC_APPS_REPO", "");
+    readonly string subId    = Env.Get("AZURE_SUBSCRIPTION_ID", "");
+    readonly string resGroup = Env.Get("AZURE_RESOURCE_GROUP", "");
+    readonly string site     = Env.Get("AZURE_LOGIC_APP_SITE", "");
+    readonly string location = Env.Get("AZURE_LOGIC_APP_LOCATION", "West US");
+
+    TextBox searchBox;
+    ListBox list;
+    Label countLabel, status;
+    Button repullBtn;
+    List<string> names = new List<string>();   // all workflow names, sorted
+
+    static readonly Color Red   = ColorTranslator.FromHtml("#F87171");
+    static readonly Color Green = ColorTranslator.FromHtml("#34D399");
+    static readonly Color Cyan  = ColorTranslator.FromHtml("#38BDF8");
+
+    static string CacheFile()
+    {
+        return Path.Combine(
+            Path.GetDirectoryName(Application.ExecutablePath), "logic-apps.txt");
+    }
+
+    public LogicAppsForm()
+    {
+        Text = "Logic Apps";
+        FormBorderStyle = FormBorderStyle.Sizable;
+        StartPosition = FormStartPosition.CenterParent;
+        MaximizeBox = true; MinimizeBox = false;
+        ClientSize = new Size(640, 660);
+        MinimumSize = new Size(480, 420);
+        BackColor = ColorTranslator.FromHtml("#0A0F1E");
+        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+
+        int right = ClientSize.Width - 24;   // inner right edge (x=616)
+
+        var header = new Label {
+            Text = "🧩  LOGIC APPS",
+            ForeColor = ColorTranslator.FromHtml("#60A5FA"),
+            Font = new Font("Segoe UI", 14F, FontStyle.Bold),
+            AutoSize = true, Location = new Point(22, 16), BackColor = Color.Transparent };
+        var divider = new Panel {
+            Location = new Point(24, 50), Size = new Size(right - 24, 2),
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+            BackColor = ColorTranslator.FromHtml("#1E3A8A") };
+
+        var envInfo = new Label {
+            Text = site.Length > 0 ? site + "  ·  " + resGroup : "(configure .env)",
+            AutoSize = true, Location = new Point(24, 60),
+            ForeColor = ColorTranslator.FromHtml("#64748B"),
+            Font = new Font("Consolas", 9F), BackColor = Color.Transparent };
+
+        repullBtn = FlatButton("↻  REPULL", ColorTranslator.FromHtml("#1E293B"),
+            new Point(right - 120, 90), new Size(120, 30));
+        repullBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        repullBtn.Click += (s, e) => Repull();
+
+        searchBox = new TextBox {
+            Location = new Point(24, 91), Size = new Size(right - 24 - 130, 28),
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+            BackColor = ColorTranslator.FromHtml("#111C33"),
+            ForeColor = ColorTranslator.FromHtml("#E2E8F0"),
+            BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 10.5F) };
+        searchBox.TextChanged += (s, e) => ApplyFilter();
+        searchBox.KeyDown += (s, e) => {
+            if (e.KeyCode == Keys.Enter && list.Items.Count > 0) {
+                OpenWorkflow(list.Items[Math.Max(0, list.SelectedIndex)].ToString());
+                e.SuppressKeyPress = true;
+            }
+            if (e.KeyCode == Keys.Escape) { searchBox.Text = ""; e.SuppressKeyPress = true; }
+        };
+        searchBox.HandleCreated += (s, e) =>
+            LauncherForm.SendMessage(searchBox.Handle,
+                LauncherForm.EM_SETCUEBANNER, (IntPtr)1, "Search workflows…");
+
+        countLabel = new Label {
+            AutoSize = true, Location = new Point(24, 128),
+            ForeColor = ColorTranslator.FromHtml("#94A3B8"),
+            Font = new Font("Segoe UI", 9F), BackColor = Color.Transparent };
+
+        list = new ListBox {
+            Location = new Point(24, 150),
+            Size = new Size(right - 24, ClientSize.Height - 150 - 44),
+            Anchor = AnchorStyles.Top | AnchorStyles.Bottom
+                   | AnchorStyles.Left | AnchorStyles.Right,
+            DrawMode = DrawMode.OwnerDrawFixed, ItemHeight = 26,
+            BorderStyle = BorderStyle.None, IntegralHeight = false,
+            BackColor = ColorTranslator.FromHtml("#0D1526"),
+            ForeColor = ColorTranslator.FromHtml("#67E8F9"),
+            Font = new Font("Consolas", 10F), Cursor = Cursors.Hand };
+        list.DrawItem += OnDrawItem;
+        // Single click on a name launches it (matches "click the name to open").
+        list.MouseClick += (s, e) => {
+            int i = list.IndexFromPoint(e.Location);
+            if (i >= 0 && i < list.Items.Count) OpenWorkflow(list.Items[i].ToString());
+        };
+        list.KeyDown += (s, e) => {
+            if (e.KeyCode == Keys.Enter && list.SelectedItem != null) {
+                OpenWorkflow(list.SelectedItem.ToString()); e.SuppressKeyPress = true;
+            }
+        };
+
+        status = new Label {
+            AutoSize = false, Location = new Point(24, ClientSize.Height - 34),
+            Size = new Size(right - 24, 24),
+            Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
+            ForeColor = ColorTranslator.FromHtml("#64748B"),
+            Font = new Font("Segoe UI", 9F), BackColor = Color.Transparent };
+
+        Controls.Add(header);
+        Controls.Add(divider);
+        Controls.Add(envInfo);
+        Controls.Add(repullBtn);
+        Controls.Add(searchBox);
+        Controls.Add(countLabel);
+        Controls.Add(list);
+        Controls.Add(status);
+        ActiveControl = searchBox;
+
+        // Load the cached list; if there's no cache yet, pull it from the repo once.
+        names = LoadCache();
+        if (names.Count == 0)
+        {
+            Repull();
+        }
+        else
+        {
+            ApplyFilter();
+            SetStatus("Loaded " + names.Count + " workflows from cache. "
+                + "Click a name to open it — ↻ REPULL to refresh from the repo.", Cyan);
+        }
+    }
+
+    static List<string> LoadCache()
+    {
+        try
+        {
+            if (File.Exists(CacheFile()))
+                return File.ReadAllLines(CacheFile())
+                    .Select(l => l.Trim()).Where(l => l.Length > 0)
+                    .OrderBy(l => l, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+        catch { }
+        return new List<string>();
+    }
+
+    // Rescan the repo's immediate subfolders → the authoritative workflow set,
+    // rewrite the cache, and rebuild the list.
+    void Repull()
+    {
+        if (repoPath.Length == 0)
+        {
+            SetStatus("Set LOGIC_APPS_REPO in .env first.", Red);
+            return;
+        }
+        if (!Directory.Exists(repoPath))
+        {
+            SetStatus("Repo folder not found: " + repoPath, Red);
+            return;
+        }
+        try
+        {
+            var found = Directory.GetDirectories(repoPath)
+                .Select(d => Path.GetFileName(d))
+                .Where(n => n.Length > 0 && n[0] != '.')
+                .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            try { File.WriteAllLines(CacheFile(), found); } catch { }
+            names = found;
+            ApplyFilter();
+            SetStatus("Repulled " + found.Count + " workflows from the repo.", Green);
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Repull failed: " + ex.Message, Red);
+        }
+    }
+
+    // Case-insensitive substring filter; repopulates the ListBox and the count.
+    void ApplyFilter()
+    {
+        string q = (searchBox.Text ?? "").Trim();
+        list.BeginUpdate();
+        list.Items.Clear();
+        int shown = 0;
+        foreach (string n in names)
+            if (q.Length == 0 ||
+                n.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                list.Items.Add(n); shown++;
+            }
+        list.EndUpdate();
+        countLabel.Text = shown + (shown == 1 ? " workflow" : " workflows")
+            + (q.Length > 0 && names.Count > 0 ? "  (of " + names.Count + ")" : "");
+    }
+
+    void OnDrawItem(object sender, DrawItemEventArgs e)
+    {
+        if (e.Index < 0) return;
+        bool sel = (e.State & DrawItemState.Selected) != 0;
+        Color back = sel
+            ? ColorTranslator.FromHtml("#123047") : ColorTranslator.FromHtml("#0D1526");
+        using (var b = new SolidBrush(back)) e.Graphics.FillRectangle(b, e.Bounds);
+        TextRenderer.DrawText(e.Graphics, list.Items[e.Index].ToString(), list.Font,
+            new Rectangle(e.Bounds.X + 12, e.Bounds.Y, e.Bounds.Width - 16, e.Bounds.Height),
+            ColorTranslator.FromHtml("#67E8F9"),
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+    }
+
+    // Build the portal deep-link and hand it to the default browser. The resource
+    // path uses %2F-escaped slashes; the workflow name is percent-encoded only if
+    // it contains a space/special char (current names pass through unchanged).
+    void OpenWorkflow(string workflow)
+    {
+        if (subId.Length == 0 || resGroup.Length == 0 || site.Length == 0)
+        {
+            SetStatus("Missing Azure config in .env "
+                + "(subscription / resource group / site).", Red);
+            return;
+        }
+        string url =
+            "https://portal.azure.com/#view/Microsoft_Azure_EMA/WorkflowMenuBlade/~/"
+            + "designer/resourceId/"
+            + "%2Fsubscriptions%2F" + subId
+            + "%2FresourceGroups%2F" + resGroup
+            + "%2Fproviders%2FMicrosoft.Web%2Fsites%2F" + site
+            + "%2Fworkflows%2F" + Uri.EscapeDataString(workflow)
+            + "/location/" + Uri.EscapeDataString(location)
+            + "/isReadOnly~/false/kind/Stateful/defaultBlade/designer/isCodeful~/false";
+        try
+        {
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            SetStatus("Opening " + workflow + " in the browser…", Cyan);
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Couldn't open browser: " + ex.Message, Red);
+        }
+    }
+
+    void SetStatus(string text, Color color)
+    {
+        status.ForeColor = color;
+        status.Text = text;
+    }
+
+    // Flat dark-theme button (default WinForms buttons are unreadable on dark forms).
+    static Button FlatButton(string text, Color back, Point at, Size size)
+    {
+        var b = new Button {
+            Text = text, Location = at, Size = size,
+            ForeColor = Color.White, BackColor = back,
+            FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand,
+            Font = new Font("Segoe UI Semibold", 9.5F) };
+        b.FlatAppearance.BorderSize = 0;
+        b.FlatAppearance.MouseOverBackColor = ControlPaint.Light(back, 0.25f);
+        return b;
     }
 }

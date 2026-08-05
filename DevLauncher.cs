@@ -192,12 +192,13 @@ class LauncherForm : Form
         header.Controls.Add(tilesBtn);
         header.Controls.Add(rowsBtn);
 
-        // Secret grabber: gold 🔑 button left of the view toggle. Opens a dialog
-        // that pulls a named secret from the production Key Vault via the az CLI.
+        // Token manager: gold 🔑 button left of the view toggle. Opens a dialog
+        // that GETs a named secret from the production Key Vault and SETs new
+        // values back into it via the az CLI.
         var keyBtn = MakeViewButton("🔑", new Point(ClientSize.Width - 352, 20));
         keyBtn.BackColor = ColorTranslator.FromHtml("#CA8A04");
         keyBtn.ForeColor = Color.White;
-        tip.SetToolTip(keyBtn, "Secret grabber — fetch a Key Vault secret");
+        tip.SetToolTip(keyBtn, "Token manager — GET / SET Key Vault secrets");
         keyBtn.Click += (s, e) => new SecretGrabberForm().Show(this);
         header.Controls.Add(keyBtn);
 
@@ -1897,7 +1898,7 @@ class SecretGrabberForm : Form
     static readonly string VaultName = Env.Get("KEYVAULT_NAME", "ins-prod-lg-kv-usw");
 
     TextBox nameBox, valueBox;
-    Button getBtn, revealBtn, copyBtn;
+    Button getBtn, setBtn, revealBtn, copyBtn;
     Label status;
     string currentValue;   // last fetched secret, in memory only
     bool revealed;
@@ -1905,11 +1906,11 @@ class SecretGrabberForm : Form
 
     public SecretGrabberForm()
     {
-        Text = "Secret Grabber";
+        Text = "Token Manager";
         FormBorderStyle = FormBorderStyle.FixedDialog;
         StartPosition = FormStartPosition.CenterParent;
         MaximizeBox = false; MinimizeBox = false;
-        ClientSize = new Size(600, 336);
+        ClientSize = new Size(600, 404);
         BackColor = ColorTranslator.FromHtml("#0A0F1E");
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
@@ -1917,7 +1918,7 @@ class SecretGrabberForm : Form
         Color fieldFore = ColorTranslator.FromHtml("#E2E8F0");
 
         var header = new Label {
-            Text = "🔑  SECRET GRABBER",
+            Text = "🔑  TOKEN MANAGER",
             ForeColor = ColorTranslator.FromHtml("#FBBF24"),
             Font = new Font("Segoe UI", 14F, FontStyle.Bold),
             AutoSize = true, Location = new Point(22, 16), BackColor = Color.Transparent };
@@ -1945,15 +1946,24 @@ class SecretGrabberForm : Form
             new Point(476, 135), new Size(100, 30));
         getBtn.Click += (s, e) => DoGet();
 
-        var valueLabel = LauncherForm.SectionLabel("VALUE", 24, 180);
+        // VALUE is editable now: GET fills it (masked) with the fetched secret,
+        // or type/paste a new value and SET writes it back to the vault.
+        var valueLabel = LauncherForm.SectionLabel("VALUE  ·  GET FILLS IT, OR TYPE A NEW ONE TO SET", 24, 180);
         valueBox = new TextBox {
-            Location = new Point(24, 200), Size = new Size(330, 28),
-            ReadOnly = true, UseSystemPasswordChar = true,
-            BackColor = ColorTranslator.FromHtml("#0D1526"), ForeColor = fieldFore,
+            Location = new Point(24, 200), Size = new Size(440, 28),
+            UseSystemPasswordChar = true,
+            BackColor = fieldBack, ForeColor = fieldFore,
             BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 10.5F) };
+        // Editing invalidates the cached "last fetched" value: COPY should copy
+        // exactly what's shown, so keep currentValue in sync with the box.
+        valueBox.TextChanged += (s, e) => currentValue = valueBox.Text;
+
+        setBtn = FlatButton("⬆  SET", ColorTranslator.FromHtml("#B45309"),
+            new Point(476, 199), new Size(100, 30));
+        setBtn.Click += (s, e) => DoSet();
 
         revealBtn = FlatButton("👁", ColorTranslator.FromHtml("#1E293B"),
-            new Point(362, 200), new Size(44, 28));
+            new Point(24, 236), new Size(44, 28));
         revealBtn.Click += (s, e) => {
             revealed = !revealed;
             valueBox.UseSystemPasswordChar = !revealed;
@@ -1961,7 +1971,7 @@ class SecretGrabberForm : Form
         };
 
         copyBtn = FlatButton("⧉  COPY", ColorTranslator.FromHtml("#1E293B"),
-            new Point(414, 200), new Size(100, 28));
+            new Point(76, 236), new Size(100, 28));
         copyReset.Tick += (s, e) => { copyReset.Stop(); copyBtn.Text = "⧉  COPY"; };
         copyBtn.Click += (s, e) => {
             if (string.IsNullOrEmpty(currentValue)) return;
@@ -1975,9 +1985,9 @@ class SecretGrabberForm : Form
         };
 
         status = new Label {
-            Text = "Enter a secret name and click GET. Requires an interactive "
-                 + "az login with Key Vault Secrets access.",
-            AutoSize = false, Location = new Point(24, 244), Size = new Size(552, 74),
+            Text = "GET a secret by name, or type a value and SET to write it to the "
+                 + "vault. Requires an interactive az login with Key Vault Secrets access.",
+            AutoSize = false, Location = new Point(24, 280), Size = new Size(552, 108),
             ForeColor = ColorTranslator.FromHtml("#64748B"),
             Font = new Font("Segoe UI", 9F), BackColor = Color.Transparent };
 
@@ -1990,6 +2000,7 @@ class SecretGrabberForm : Form
         Controls.Add(getBtn);
         Controls.Add(valueLabel);
         Controls.Add(valueBox);
+        Controls.Add(setBtn);
         Controls.Add(revealBtn);
         Controls.Add(copyBtn);
         Controls.Add(status);
@@ -2043,7 +2054,7 @@ class SecretGrabberForm : Form
         revealed = false;
         valueBox.UseSystemPasswordChar = true;
         revealBtn.Text = "👁";
-        getBtn.Enabled = false;
+        getBtn.Enabled = false; setBtn.Enabled = false;
         getBtn.Text = "…";
         SetStatus("Fetching " + name + " from " + VaultName + " …",
             ColorTranslator.FromHtml("#38BDF8"));
@@ -2082,7 +2093,7 @@ class SecretGrabberForm : Form
 
     void Done(string name, string outp, string err, int code, bool timedOut)
     {
-        getBtn.Enabled = true;
+        getBtn.Enabled = true; setBtn.Enabled = true;
         getBtn.Text = "▶  GET";
 
         if (timedOut)
@@ -2107,6 +2118,124 @@ class SecretGrabberForm : Form
             SetStatus("✗ " + msg, ColorTranslator.FromHtml("#F87171"));
         }
     }
+
+    // Write the VALUE box back to the vault under SECRET NAME (creates the secret
+    // or adds a new version). Writing a production secret is destructive and hard
+    // to reverse, so confirm first. The value is passed to az via a temp --file
+    // (NOT the command line) so arbitrary characters can't break quoting or inject.
+    void DoSet()
+    {
+        string name = (nameBox.Text ?? "").Trim();
+        if (name.Length == 0)
+        {
+            SetStatus("Enter a secret name first.", ColorTranslator.FromHtml("#F87171"));
+            return;
+        }
+        // Same [0-9a-zA-Z-] rule as GET — keeps the name safe to pass through cmd.exe.
+        foreach (char c in name)
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z')
+                || (c >= 'A' && c <= 'Z') || c == '-'))
+            {
+                SetStatus("Invalid name: Key Vault secret names may only contain "
+                    + "letters, digits, and hyphens.", ColorTranslator.FromHtml("#F87171"));
+                return;
+            }
+
+        string value = valueBox.Text ?? "";
+        if (value.Length == 0)
+        {
+            SetStatus("Enter a value to set first.", ColorTranslator.FromHtml("#F87171"));
+            return;
+        }
+
+        if (MessageBox.Show(
+                "Set secret \"" + name + "\" in vault " + VaultName + "?\n\n"
+                + "This creates the secret or adds a new version, overwriting the "
+                + "value the vault currently returns for this name.",
+                "Confirm SET", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning)
+            != DialogResult.OK)
+            return;
+
+        getBtn.Enabled = false; setBtn.Enabled = false;
+        setBtn.Text = "…";
+        SetStatus("Setting " + name + " in " + VaultName + " …",
+            ColorTranslator.FromHtml("#38BDF8"));
+
+        // Stage the value in a temp file so az reads it via --file: no shell quoting
+        // of the (arbitrary) secret value, so it can't be corrupted or injected.
+        string tmp;
+        try
+        {
+            tmp = Path.Combine(Path.GetTempPath(),
+                "devlauncher-secret-" + Guid.NewGuid().ToString("N") + ".txt");
+            File.WriteAllText(tmp, value, new UTF8Encoding(false));
+        }
+        catch (Exception ex)
+        {
+            getBtn.Enabled = true; setBtn.Enabled = true; setBtn.Text = "⬆  SET";
+            SetStatus("✗ Couldn't stage the value: " + ex.Message,
+                ColorTranslator.FromHtml("#F87171"));
+            return;
+        }
+
+        string args = "/c az keyvault secret set --vault-name " + VaultName
+                    + " --name " + name + " --file \"" + tmp
+                    + "\" --encoding utf-8 --query id -o tsv";
+
+        var t = new System.Threading.Thread(() =>
+        {
+            string outp = "", err = "";
+            int code = -1;
+            bool timedOut = false;
+            try
+            {
+                var psi = new ProcessStartInfo("cmd.exe", args)
+                {
+                    UseShellExecute = false, CreateNoWindow = true,
+                    RedirectStandardOutput = true, RedirectStandardError = true
+                };
+                using (var p = Process.Start(psi))
+                {
+                    outp = p.StandardOutput.ReadToEnd();
+                    err = p.StandardError.ReadToEnd();
+                    if (!p.WaitForExit(60000)) { timedOut = true; try { p.Kill(); } catch { } }
+                    else code = p.ExitCode;
+                }
+            }
+            catch (Exception ex) { err = ex.Message; }
+            finally { try { File.Delete(tmp); } catch { } }   // never leave the secret on disk
+
+            try { BeginInvoke((Action)(() => SetDone(name, outp, err, code, timedOut))); }
+            catch { }   // form closed before the call returned
+        }) { IsBackground = true };
+        t.Start();
+    }
+
+    void SetDone(string name, string outp, string err, int code, bool timedOut)
+    {
+        getBtn.Enabled = true; setBtn.Enabled = true;
+        setBtn.Text = "⬆  SET";
+
+        if (timedOut)
+        {
+            SetStatus("Timed out after 60s waiting for az. Is the CLI installed and logged in?",
+                ColorTranslator.FromHtml("#F87171"));
+            return;
+        }
+
+        if (code == 0)
+        {
+            SetStatus("✓ Set \"" + name + "\" in " + VaultName
+                + ".  GET it back to confirm the new value.",
+                ColorTranslator.FromHtml("#34D399"));
+        }
+        else
+        {
+            string msg = (err ?? "").Trim();
+            if (msg.Length == 0) msg = "Set failed (exit " + code + ").";
+            SetStatus("✗ " + msg, ColorTranslator.FromHtml("#F87171"));
+        }
+    }
 }
 
 // The 🧩 Logic Apps launcher: lists every Standard Logic App workflow (one per
@@ -2119,6 +2248,18 @@ class SecretGrabberForm : Form
 // location) come from .env, so nothing sensitive lives in the committed source.
 class LogicAppsForm : Form
 {
+    // One entry in the list. Standard workflows are subfolders of the repo and
+    // open the EMA designer blade under the shared site; Consumption logic apps
+    // are standalone Azure resources (each in its own resource group) and open
+    // the classic resource designer blade. The two build DIFFERENT deep-links.
+    class LaItem
+    {
+        public string Name = "";
+        public bool Consumption;      // false = Standard workflow, true = Consumption
+        public string Rg = "";        // Consumption only: the app's own resource group
+        public override string ToString() { return Name; }
+    }
+
     readonly string repoPath = Env.Get("LOGIC_APPS_REPO", "");
     readonly string subId    = Env.Get("AZURE_SUBSCRIPTION_ID", "");
     readonly string resGroup = Env.Get("AZURE_RESOURCE_GROUP", "");
@@ -2129,16 +2270,29 @@ class LogicAppsForm : Form
     ListBox list;
     Label countLabel, status;
     Button repullBtn;
-    List<string> names = new List<string>();   // all workflow names, sorted
+    // Standard workflows (from the repo) + Consumption logic apps (from az),
+    // merged and sorted by name for display.
+    List<LaItem> items = new List<LaItem>();
 
-    static readonly Color Red   = ColorTranslator.FromHtml("#F87171");
-    static readonly Color Green = ColorTranslator.FromHtml("#34D399");
-    static readonly Color Cyan  = ColorTranslator.FromHtml("#38BDF8");
+    static readonly Color Red      = ColorTranslator.FromHtml("#F87171");
+    static readonly Color Green    = ColorTranslator.FromHtml("#34D399");
+    static readonly Color Cyan     = ColorTranslator.FromHtml("#38BDF8");
+    static readonly Color StdText  = ColorTranslator.FromHtml("#67E8F9");   // Standard
+    static readonly Color ConsText = ColorTranslator.FromHtml("#FBBF24");   // Consumption
+    static readonly Color BadgeDim = ColorTranslator.FromHtml("#475569");
 
     static string CacheFile()
     {
         return Path.Combine(
             Path.GetDirectoryName(Application.ExecutablePath), "logic-apps.txt");
+    }
+
+    // Separate cache for Consumption logic apps (name|resourceGroup per line),
+    // since those come from an az query rather than the repo folder scan.
+    static string ConsumptionCacheFile()
+    {
+        return Path.Combine(
+            Path.GetDirectoryName(Application.ExecutablePath), "logic-apps-consumption.txt");
     }
 
     public LogicAppsForm()
@@ -2184,7 +2338,7 @@ class LogicAppsForm : Form
         searchBox.TextChanged += (s, e) => ApplyFilter();
         searchBox.KeyDown += (s, e) => {
             if (e.KeyCode == Keys.Enter && list.Items.Count > 0) {
-                OpenWorkflow(list.Items[Math.Max(0, list.SelectedIndex)].ToString());
+                OpenWorkflow((LaItem)list.Items[Math.Max(0, list.SelectedIndex)]);
                 e.SuppressKeyPress = true;
             }
             if (e.KeyCode == Keys.Escape) { searchBox.Text = ""; e.SuppressKeyPress = true; }
@@ -2212,11 +2366,11 @@ class LogicAppsForm : Form
         // Single click on a name launches it (matches "click the name to open").
         list.MouseClick += (s, e) => {
             int i = list.IndexFromPoint(e.Location);
-            if (i >= 0 && i < list.Items.Count) OpenWorkflow(list.Items[i].ToString());
+            if (i >= 0 && i < list.Items.Count) OpenWorkflow((LaItem)list.Items[i]);
         };
         list.KeyDown += (s, e) => {
             if (e.KeyCode == Keys.Enter && list.SelectedItem != null) {
-                OpenWorkflow(list.SelectedItem.ToString()); e.SuppressKeyPress = true;
+                OpenWorkflow((LaItem)list.SelectedItem); e.SuppressKeyPress = true;
             }
         };
 
@@ -2237,63 +2391,190 @@ class LogicAppsForm : Form
         Controls.Add(status);
         ActiveControl = searchBox;
 
-        // Load the cached list; if there's no cache yet, pull it from the repo once.
-        names = LoadCache();
-        if (names.Count == 0)
+        // Load both caches (Standard from the repo scan, Consumption from az).
+        // If neither has anything yet, pull once.
+        items = LoadCache();
+        if (items.Count == 0)
         {
             Repull();
         }
         else
         {
             ApplyFilter();
-            SetStatus("Loaded " + names.Count + " workflows from cache. "
-                + "Click a name to open it — ↻ REPULL to refresh from the repo.", Cyan);
+            SetStatus("Loaded " + Describe() + " from cache. "
+                + "Click a name to open it — ↻ REPULL to refresh.", Cyan);
         }
     }
 
-    static List<string> LoadCache()
+    // "N logic apps (X standard · Y consumption)" for status/count text.
+    string Describe()
     {
+        int std = items.Count(i => !i.Consumption), con = items.Count(i => i.Consumption);
+        return items.Count + " logic apps (" + std + " standard · " + con + " consumption)";
+    }
+
+    // Load and merge both caches into one sorted list.
+    static List<LaItem> LoadCache()
+    {
+        var list = new List<LaItem>();
         try
         {
             if (File.Exists(CacheFile()))
-                return File.ReadAllLines(CacheFile())
+                list.AddRange(File.ReadAllLines(CacheFile())
                     .Select(l => l.Trim()).Where(l => l.Length > 0)
-                    .OrderBy(l => l, StringComparer.OrdinalIgnoreCase).ToList();
+                    .Select(l => new LaItem { Name = l, Consumption = false }));
         }
         catch { }
-        return new List<string>();
-    }
-
-    // Rescan the repo's immediate subfolders → the authoritative workflow set,
-    // rewrite the cache, and rebuild the list.
-    void Repull()
-    {
-        if (repoPath.Length == 0)
-        {
-            SetStatus("Set LOGIC_APPS_REPO in .env first.", Red);
-            return;
-        }
-        if (!Directory.Exists(repoPath))
-        {
-            SetStatus("Repo folder not found: " + repoPath, Red);
-            return;
-        }
         try
         {
-            var found = Directory.GetDirectories(repoPath)
-                .Select(d => Path.GetFileName(d))
-                .Where(n => n.Length > 0 && n[0] != '.')
-                .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            try { File.WriteAllLines(CacheFile(), found); } catch { }
-            names = found;
-            ApplyFilter();
-            SetStatus("Repulled " + found.Count + " workflows from the repo.", Green);
+            if (File.Exists(ConsumptionCacheFile()))
+                list.AddRange(File.ReadAllLines(ConsumptionCacheFile())
+                    .Select(l => l.Trim()).Where(l => l.Length > 0)
+                    .Select(ParseConsumptionLine).Where(i => i != null));
         }
-        catch (Exception ex)
+        catch { }
+        return Sort(list);
+    }
+
+    // Consumption cache line is "name|resourceGroup".
+    static LaItem ParseConsumptionLine(string line)
+    {
+        int bar = line.IndexOf('|');
+        if (bar <= 0) return null;
+        return new LaItem {
+            Name = line.Substring(0, bar).Trim(),
+            Rg = line.Substring(bar + 1).Trim(),
+            Consumption = true };
+    }
+
+    static List<LaItem> Sort(List<LaItem> l)
+    {
+        return l.OrderBy(i => i.Name, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(i => i.Consumption).ToList();
+    }
+
+    // Rescan the repo's immediate subfolders (Standard, synchronous + fast) and
+    // rewrite that cache, then kick off the az query for Consumption logic apps
+    // on a background thread so the UI never freezes.
+    void Repull()
+    {
+        var standard = new List<LaItem>();
+        if (repoPath.Length == 0)
+            SetStatus("Set LOGIC_APPS_REPO in .env to list Standard workflows.", Red);
+        else if (!Directory.Exists(repoPath))
+            SetStatus("Repo folder not found: " + repoPath, Red);
+        else
         {
-            SetStatus("Repull failed: " + ex.Message, Red);
+            try
+            {
+                var found = Directory.GetDirectories(repoPath)
+                    .Select(d => Path.GetFileName(d))
+                    .Where(n => n.Length > 0 && n[0] != '.')
+                    .Select(n => new LaItem { Name = n, Consumption = false })
+                    .ToList();
+                try { File.WriteAllLines(CacheFile(),
+                    found.Select(i => i.Name).ToArray()); } catch { }
+                standard = found;
+            }
+            catch (Exception ex) { SetStatus("Repo scan failed: " + ex.Message, Red); }
         }
+
+        // Keep any cached Consumption entries visible while the az query runs.
+        var consumption = items.Where(i => i.Consumption).ToList();
+        items = Sort(standard.Concat(consumption).ToList());
+        ApplyFilter();
+        PullConsumption(standard.Count);
+    }
+
+    // Enumerate every Consumption logic app in the subscription via az, rewrite
+    // the consumption cache, and merge into the list. Runs off the UI thread.
+    void PullConsumption(int standardCount)
+    {
+        if (subId.Length == 0)
+        {
+            SetStatus("Repulled " + standardCount + " Standard workflows. "
+                + "Set AZURE_SUBSCRIPTION_ID in .env to also list Consumption apps.",
+                standardCount > 0 ? Green : Red);
+            return;
+        }
+
+        repullBtn.Enabled = false;
+        SetStatus("Repulled " + standardCount + " Standard workflows. "
+            + "Querying Consumption logic apps via az…", Cyan);
+
+        // Tab-separated name<TAB>resourceGroup, one per line, across the subscription.
+        string args = "/c az resource list --subscription " + subId
+            + " --resource-type Microsoft.Logic/workflows "
+            + "--query \"[].{n:name,g:resourceGroup}\" -o tsv";
+
+        var t = new System.Threading.Thread(() =>
+        {
+            string outp = "", err = "";
+            int code = -1;
+            bool timedOut = false;
+            try
+            {
+                var psi = new ProcessStartInfo("cmd.exe", args)
+                {
+                    UseShellExecute = false, CreateNoWindow = true,
+                    RedirectStandardOutput = true, RedirectStandardError = true
+                };
+                using (var p = Process.Start(psi))
+                {
+                    outp = p.StandardOutput.ReadToEnd();
+                    err = p.StandardError.ReadToEnd();
+                    if (!p.WaitForExit(120000)) { timedOut = true; try { p.Kill(); } catch { } }
+                    else code = p.ExitCode;
+                }
+            }
+            catch (Exception ex) { err = ex.Message; }
+
+            try { BeginInvoke((Action)(() =>
+                ConsumptionDone(standardCount, outp, err, code, timedOut))); }
+            catch { }
+        }) { IsBackground = true };
+        t.Start();
+    }
+
+    void ConsumptionDone(int standardCount, string outp, string err, int code, bool timedOut)
+    {
+        repullBtn.Enabled = true;
+
+        if (timedOut)
+        {
+            SetStatus("Repulled " + standardCount + " Standard workflows. Consumption "
+                + "query timed out after 120s — is az installed and logged in?", Red);
+            return;
+        }
+        if (code != 0)
+        {
+            string msg = (err ?? "").Trim();
+            if (msg.Length == 0) msg = "az exited " + code + ".";
+            SetStatus("Repulled " + standardCount + " Standard workflows. "
+                + "Consumption query failed: " + msg, Red);
+            return;
+        }
+
+        var consumption = new List<LaItem>();
+        foreach (var raw in (outp ?? "").Split('\n'))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0) continue;
+            var cols = line.Split('\t');
+            string nm = cols[0].Trim();
+            if (nm.Length == 0) continue;
+            consumption.Add(new LaItem {
+                Name = nm, Consumption = true,
+                Rg = cols.Length > 1 ? cols[1].Trim() : "" });
+        }
+
+        try { File.WriteAllLines(ConsumptionCacheFile(),
+            consumption.Select(i => i.Name + "|" + i.Rg).ToArray()); } catch { }
+
+        var standard = items.Where(i => !i.Consumption).ToList();
+        items = Sort(standard.Concat(consumption).ToList());
+        ApplyFilter();
+        SetStatus("Repulled " + Describe() + " from the repo and az.", Green);
     }
 
     // Case-insensitive substring filter; repopulates the ListBox and the count.
@@ -2303,54 +2584,83 @@ class LogicAppsForm : Form
         list.BeginUpdate();
         list.Items.Clear();
         int shown = 0;
-        foreach (string n in names)
+        foreach (var it in items)
             if (q.Length == 0 ||
-                n.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0)
+                it.Name.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                list.Items.Add(n); shown++;
+                list.Items.Add(it); shown++;
             }
         list.EndUpdate();
-        countLabel.Text = shown + (shown == 1 ? " workflow" : " workflows")
-            + (q.Length > 0 && names.Count > 0 ? "  (of " + names.Count + ")" : "");
+        countLabel.Text = shown + (shown == 1 ? " logic app" : " logic apps")
+            + (q.Length > 0 && items.Count > 0 ? "  (of " + items.Count + ")" : "");
     }
 
     void OnDrawItem(object sender, DrawItemEventArgs e)
     {
         if (e.Index < 0) return;
+        var it = (LaItem)list.Items[e.Index];
         bool sel = (e.State & DrawItemState.Selected) != 0;
         Color back = sel
             ? ColorTranslator.FromHtml("#123047") : ColorTranslator.FromHtml("#0D1526");
         using (var b = new SolidBrush(back)) e.Graphics.FillRectangle(b, e.Bounds);
-        TextRenderer.DrawText(e.Graphics, list.Items[e.Index].ToString(), list.Font,
-            new Rectangle(e.Bounds.X + 12, e.Bounds.Y, e.Bounds.Width - 16, e.Bounds.Height),
-            ColorTranslator.FromHtml("#67E8F9"),
+
+        // Right-aligned type badge, then the name in the type's color to its left.
+        string badge = it.Consumption ? "consumption" : "standard";
+        Size badgeSz = TextRenderer.MeasureText(badge, list.Font);
+        TextRenderer.DrawText(e.Graphics, badge, list.Font,
+            new Rectangle(e.Bounds.Right - badgeSz.Width - 12, e.Bounds.Y,
+                badgeSz.Width, e.Bounds.Height),
+            BadgeDim, TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
+        TextRenderer.DrawText(e.Graphics, it.Name, list.Font,
+            new Rectangle(e.Bounds.X + 12, e.Bounds.Y,
+                e.Bounds.Width - 16 - badgeSz.Width - 16, e.Bounds.Height),
+            it.Consumption ? ConsText : StdText,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
     }
 
-    // Build the portal deep-link and hand it to the default browser. The resource
-    // path uses %2F-escaped slashes; the workflow name is percent-encoded only if
-    // it contains a space/special char (current names pass through unchanged).
-    void OpenWorkflow(string workflow)
+    // Build the portal deep-link for the item and hand it to the default browser.
+    // Standard workflows open the EMA designer blade under the shared site;
+    // Consumption logic apps open the classic resource designer in their own RG.
+    void OpenWorkflow(LaItem item)
     {
-        if (subId.Length == 0 || resGroup.Length == 0 || site.Length == 0)
+        string url;
+        if (item.Consumption)
         {
-            SetStatus("Missing Azure config in .env "
-                + "(subscription / resource group / site).", Red);
-            return;
+            if (subId.Length == 0 || item.Rg.Length == 0)
+            {
+                SetStatus("Missing config for " + item.Name
+                    + " (subscription / resource group).", Red);
+                return;
+            }
+            url =
+                "https://portal.azure.com/#@/resource"
+                + "/subscriptions/" + subId
+                + "/resourceGroups/" + Uri.EscapeDataString(item.Rg)
+                + "/providers/Microsoft.Logic/workflows/" + Uri.EscapeDataString(item.Name)
+                + "/logicApp";
         }
-        string url =
-            "https://portal.azure.com/#view/Microsoft_Azure_EMA/WorkflowMenuBlade/~/"
-            + "designer/resourceId/"
-            + "%2Fsubscriptions%2F" + subId
-            + "%2FresourceGroups%2F" + resGroup
-            + "%2Fproviders%2FMicrosoft.Web%2Fsites%2F" + site
-            + "%2Fworkflows%2F" + Uri.EscapeDataString(workflow)
-            + "/location/" + Uri.EscapeDataString(location)
-            + "/isReadOnly~/false/kind/Stateful/defaultBlade/designer/isCodeful~/false";
+        else
+        {
+            if (subId.Length == 0 || resGroup.Length == 0 || site.Length == 0)
+            {
+                SetStatus("Missing Azure config in .env "
+                    + "(subscription / resource group / site).", Red);
+                return;
+            }
+            url =
+                "https://portal.azure.com/#view/Microsoft_Azure_EMA/WorkflowMenuBlade/~/"
+                + "designer/resourceId/"
+                + "%2Fsubscriptions%2F" + subId
+                + "%2FresourceGroups%2F" + resGroup
+                + "%2Fproviders%2FMicrosoft.Web%2Fsites%2F" + site
+                + "%2Fworkflows%2F" + Uri.EscapeDataString(item.Name)
+                + "/location/" + Uri.EscapeDataString(location)
+                + "/isReadOnly~/false/kind/Stateful/defaultBlade/designer/isCodeful~/false";
+        }
         try
         {
             Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
-            SetStatus("Opening " + workflow + " in the browser…", Cyan);
+            SetStatus("Opening " + item.Name + " in the browser…", Cyan);
         }
         catch (Exception ex)
         {

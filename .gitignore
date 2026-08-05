@@ -1,5 +1,6 @@
 # Local, environment-specific config & secrets — never commit.
 .env
 
-# 🧩 Logic Apps launcher cache (rebuilt by the ↻ REPULL button).
+# 🧩 Logic Apps launcher caches (rebuilt by the ↻ REPULL button).
 logic-apps.txt
+logic-apps-consumption.txt

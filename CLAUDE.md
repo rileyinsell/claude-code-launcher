@@ -15,7 +15,8 @@ telling it to auto-start the app.
 | `view.txt` | Grid view mode: `tiles` or `rows`. Written by the ▦/☰ toggle in the header. Safe to delete (defaults to tiles). |
 | `.env` | **Local config & secrets — git-ignored.** `KEY=VALUE` lines read by the `Env` class (`.env` next to the exe, loaded once, lazily). Holds the Logic Apps repo path + Azure ids (subscription/resource group/site/location) and the Key Vault name. Missing file/key falls back to a literal in code, so the app still runs without it. Copy `.env.example` → `.env` and fill in. |
 | `.env.example` | Committed template for `.env` with placeholder values. |
-| `logic-apps.txt` | **Git-ignored cache** for the 🧩 Logic Apps launcher: one workflow name per line. Written by the ↻ REPULL button (and auto-created on first open if absent) so the repo isn't rescanned every time. Re-sorted case-insensitively on load. Safe to delete (repull rebuilds it). |
+| `logic-apps.txt` | **Git-ignored cache** for the 🧩 Logic Apps launcher: one **Standard** workflow name per line. Written by the ↻ REPULL button (and auto-created on first open if absent) so the repo isn't rescanned every time. Re-sorted case-insensitively on load. Safe to delete (repull rebuilds it). |
+| `logic-apps-consumption.txt` | **Git-ignored cache** for the 🧩 launcher's **Consumption** logic apps: `name\|resourceGroup` per line. Written by ↻ REPULL from an `az resource list` query over the subscription (each consumption app lives in its own resource group). Safe to delete (repull rebuilds it). |
 | `DevLauncher.ico` | App icon (blue rounded tile + ⚡). Embedded in the exe and used by the shortcuts. |
 | `AppLauncher.ps1` | **Legacy / unused.** The original PowerShell+WPF version. The exe no longer reads it. Kept for reference; safe to delete. |
 | `Launch.vbs` | **Legacy / unused.** Old no-flash launcher for the PS1 version. |
@@ -91,29 +92,66 @@ the left) opens the file with its default app. The window opens
 at up to 1400×880 (clamped to the working area).
 
 ## Logic Apps launcher (the 🧩 button)
-Azure-blue 🧩 button in the header, left of the 🔑 secret grabber. Opens
-`LogicAppsForm` — a searchable list of every Standard Logic App workflow;
-**single-clicking a name opens that workflow's designer in the Azure portal** in
-the default browser. Search box filters live (case-insensitive substring), Esc
-clears, Enter opens the selected/top match. Live count shown ("278 workflows",
-"12 workflows (of 278)" while filtering).
+Azure-blue 🧩 button in the header, left of the 🔑 token manager. Opens
+`LogicAppsForm` — a searchable list of **both Standard workflows and Consumption
+logic apps**; **single-clicking a name opens that item's designer in the Azure
+portal** in the default browser. Search box filters live (case-insensitive
+substring), Esc clears, Enter opens the selected/top match. Live count shown
+("290 logic apps", "12 logic apps (of 290)" while filtering); the REPULL status
+breaks it down as "N logic apps (X standard · Y consumption)". Each row carries
+its type in a dim right-aligned badge ("standard" / "consumption") and is colored
+by type — Standard cyan, Consumption amber. Items are `LaItem` objects (name +
+`Consumption` flag + `Rg`) in the ListBox, so click/Enter hand the whole item to
+`OpenWorkflow`.
 
-- **Workflow list is cached**, not rescanned each open. Names are the immediate
-  subfolders of the logic-apps repo (`LOGIC_APPS_REPO` in `.env`, ~278 of them).
-  The list lives in `logic-apps.txt` next to the exe; on open it loads from there
-  (auto-repulls once if the cache is missing). The **↻ REPULL** button rescans the
-  repo (`Directory.GetDirectories`, skips dot-folders, sorts) and rewrites the
-  cache — use it after workflows are added/renamed (rare).
-- **Deep-link URL** is built in `OpenWorkflow()` from `.env` values
-  (`AZURE_SUBSCRIPTION_ID` / `AZURE_RESOURCE_GROUP` / `AZURE_LOGIC_APP_SITE` /
-  `AZURE_LOGIC_APP_LOCATION`). The resource path uses `%2F`-escaped slashes; the
-  workflow name and location go through `Uri.EscapeDataString` (a no-op for the
-  current `[A-Za-z0-9_-]` names, correct if a space ever appears). Verified
-  byte-exact against the known-good `Agave_AutoCompleteCalls-Migrated` link.
+- **Two kinds, two sources, two caches, two URLs:**
+  - **Standard** workflows are the immediate subfolders of the logic-apps repo
+    (`LOGIC_APPS_REPO` in `.env`, ~278). Cached in `logic-apps.txt`. Deep-link is
+    the EMA `WorkflowMenuBlade` designer under the shared site
+    (`AZURE_RESOURCE_GROUP` / `AZURE_LOGIC_APP_SITE` / `AZURE_LOGIC_APP_LOCATION`),
+    `%2F`-escaped. Verified byte-exact against the known-good
+    `Agave_AutoCompleteCalls-Migrated` link — don't reshape it.
+  - **Consumption** logic apps are standalone `Microsoft.Logic/workflows`
+    resources, **each in its own resource group**, enumerated across the
+    subscription via `az resource list --resource-type Microsoft.Logic/workflows`.
+    Cached in `logic-apps-consumption.txt` as `name|resourceGroup`. Deep-link is
+    the classic resource blade `#@/resource/subscriptions/…/providers/
+    Microsoft.Logic/workflows/<name>/logicApp` (the `logicApp` menu id is the
+    consumption designer) using the item's **own** `Rg`, not `AZURE_RESOURCE_GROUP`.
+- **↻ REPULL** rescans the repo for Standard (synchronous, fast) and rewrites
+  `logic-apps.txt`, then fires the `az resource list` query for Consumption on a
+  **background thread** (120s timeout, button disabled while it runs) and rewrites
+  `logic-apps-consumption.txt`. Cached Consumption entries stay visible during the
+  query so the list never blanks. On open both caches load and merge; if both are
+  empty it auto-repulls once. Needs an interactive `az login` for the Consumption
+  half; the Standard half works offline.
 - **Config is `.env`-only** — nothing sensitive is compiled into the source. The
   literals passed to `Env.Get(...)` are non-secret fallbacks (empty for the
-  Azure ids), so a missing `.env` degrades gracefully with a "configure .env"
-  status rather than leaking values.
+  Azure ids), so a missing `.env` degrades gracefully: Standard needs the repo
+  path + site; Consumption needs only `AZURE_SUBSCRIPTION_ID`. Missing config
+  shows a "configure .env" status rather than leaking values.
+
+## Token manager (the 🔑 button)
+Gold 🔑 button in the header, right of the 🧩 launcher. Opens `SecretGrabberForm`
+(window titled **Token Manager**) — GET a secret from the production Key Vault
+**and** SET a new value back into it, both via the `az` CLI on a background thread.
+Vault name from `.env` (`KEYVAULT_NAME`). Requires an interactive `az login` with
+Key Vault Secrets access (Secrets User for GET, Secrets Officer for SET).
+
+- **GET** runs `az keyvault secret show --query value -o tsv` for the named secret
+  and fills the VALUE box (masked; 👁 reveals, ⧉ COPY copies). Unchanged behavior.
+- **SET** writes the VALUE box back under SECRET NAME (`az keyvault secret set`),
+  creating the secret or adding a new version. **Guards:**
+  - A confirm dialog fires first — SET is destructive/outward-facing (it overwrites
+    the value the vault returns for that name).
+  - The value is passed to `az` via a **temp `--file`**, not the command line, so
+    arbitrary characters can't break shell quoting or inject. The temp file is
+    written UTF-8-no-BOM and **deleted in a `finally`** so the secret never lingers
+    on disk.
+  - The secret NAME is validated to `[0-9a-zA-Z-]` (same rule as GET) before it's
+    interpolated into the `cmd.exe` arg — so the name is injection-safe too.
+- The VALUE box is now editable; its `TextChanged` keeps `currentValue` in sync so
+  ⧉ COPY always copies exactly what's shown (fetched or freshly typed).
 
 ## Tiles vs rows (the ▦ / ☰ toggle)
 The header has a view toggle next to search. **Tiles** is the classic grid;

@@ -4,3 +4,7 @@
 # 🧩 Logic Apps launcher caches (rebuilt by the ↻ REPULL button).
 logic-apps.txt
 logic-apps-consumption.txt
+
+# 🔑 Token Manager cached secret NAMES (names only, never values;
+# rebuilt by the ↻ LIST button).
+secrets.txt

@@ -1898,11 +1898,23 @@ class SecretGrabberForm : Form
     static readonly string VaultName = Env.Get("KEYVAULT_NAME", "ins-prod-lg-kv-usw");
 
     TextBox nameBox, valueBox;
-    Button getBtn, setBtn, revealBtn, copyBtn;
-    Label status;
+    Button getBtn, setBtn, revealBtn, copyBtn, listBtn;
+    ListBox secretList;                 // searchable dropdown of secret names
+    Label status, countLabel;
     string currentValue;   // last fetched secret, in memory only
     bool revealed;
+    // All secret names in the vault (from the last LIST/cache), filtered live by
+    // the SECRET NAME box into secretList.
+    List<string> secretNames = new List<string>();
     readonly Timer copyReset = new Timer { Interval = 1200 };
+
+    // Cached secret-NAME list (names only, never values) so the vault isn't
+    // re-queried on every open. Git-ignored; rebuilt by the ↻ LIST button.
+    static string SecretsCacheFile()
+    {
+        return Path.Combine(
+            Path.GetDirectoryName(Application.ExecutablePath), "secrets.txt");
+    }
 
     public SecretGrabberForm()
     {
@@ -1910,7 +1922,7 @@ class SecretGrabberForm : Form
         FormBorderStyle = FormBorderStyle.FixedDialog;
         StartPosition = FormStartPosition.CenterParent;
         MaximizeBox = false; MinimizeBox = false;
-        ClientSize = new Size(600, 404);
+        ClientSize = new Size(600, 560);
         BackColor = ColorTranslator.FromHtml("#0A0F1E");
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
@@ -1932,25 +1944,62 @@ class SecretGrabberForm : Form
             ForeColor = ColorTranslator.FromHtml("#94A3B8"),
             Font = new Font("Consolas", 10F), BackColor = Color.Transparent };
 
-        var nameLabel = LauncherForm.SectionLabel("SECRET NAME", 24, 116);
+        // The SECRET NAME box doubles as a search box: type to filter the
+        // secretList dropdown below it, click a name to fetch it.
+        var nameLabel = LauncherForm.SectionLabel("SECRET NAME  ·  TYPE TO SEARCH", 24, 116);
         nameBox = new TextBox {
-            Location = new Point(24, 136), Size = new Size(440, 28),
-            Text = "od-cred-ef3a2f9fc2",
+            Location = new Point(24, 136), Size = new Size(330, 28),
             BackColor = fieldBack, ForeColor = fieldFore,
             BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 10.5F) };
+        nameBox.TextChanged += (s, e) => FilterSecrets();
         nameBox.KeyDown += (s, e) => {
             if (e.KeyCode == Keys.Enter) { DoGet(); e.SuppressKeyPress = true; }
+            // Down arrow jumps into the filtered list so you can arrow through it.
+            else if (e.KeyCode == Keys.Down && secretList.Items.Count > 0) {
+                secretList.SelectedIndex = 0; secretList.Focus();
+                e.SuppressKeyPress = true;
+            }
         };
+        nameBox.HandleCreated += (s, e) =>
+            LauncherForm.SendMessage(nameBox.Handle,
+                LauncherForm.EM_SETCUEBANNER, (IntPtr)1, "Search secret names…");
+
+        listBtn = FlatButton("↻  LIST", ColorTranslator.FromHtml("#1E293B"),
+            new Point(362, 135), new Size(100, 30));
+        listBtn.Click += (s, e) => RefreshSecretNames();
 
         getBtn = FlatButton("▶  GET", ColorTranslator.FromHtml("#0891B2"),
             new Point(476, 135), new Size(100, 30));
         getBtn.Click += (s, e) => DoGet();
 
+        countLabel = new Label {
+            AutoSize = true, Location = new Point(24, 170),
+            ForeColor = ColorTranslator.FromHtml("#94A3B8"),
+            Font = new Font("Segoe UI", 9F), BackColor = Color.Transparent };
+
+        secretList = new ListBox {
+            Location = new Point(24, 190), Size = new Size(552, 150),
+            BorderStyle = BorderStyle.FixedSingle, IntegralHeight = false,
+            BackColor = ColorTranslator.FromHtml("#0D1526"),
+            ForeColor = ColorTranslator.FromHtml("#67E8F9"),
+            Font = new Font("Consolas", 10F), Cursor = Cursors.Hand };
+        // Single click on a name selects + fetches it (matches the launcher's
+        // "click the name to open" feel).
+        secretList.MouseClick += (s, e) => {
+            int i = secretList.IndexFromPoint(e.Location);
+            if (i >= 0 && i < secretList.Items.Count) PickAndGet((string)secretList.Items[i]);
+        };
+        secretList.KeyDown += (s, e) => {
+            if (e.KeyCode == Keys.Enter && secretList.SelectedItem != null) {
+                PickAndGet((string)secretList.SelectedItem); e.SuppressKeyPress = true;
+            }
+        };
+
         // VALUE is editable now: GET fills it (masked) with the fetched secret,
         // or type/paste a new value and SET writes it back to the vault.
-        var valueLabel = LauncherForm.SectionLabel("VALUE  ·  GET FILLS IT, OR TYPE A NEW ONE TO SET", 24, 180);
+        var valueLabel = LauncherForm.SectionLabel("VALUE  ·  GET FILLS IT, OR TYPE A NEW ONE TO SET", 24, 352);
         valueBox = new TextBox {
-            Location = new Point(24, 200), Size = new Size(440, 28),
+            Location = new Point(24, 372), Size = new Size(440, 28),
             UseSystemPasswordChar = true,
             BackColor = fieldBack, ForeColor = fieldFore,
             BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 10.5F) };
@@ -1959,11 +2008,11 @@ class SecretGrabberForm : Form
         valueBox.TextChanged += (s, e) => currentValue = valueBox.Text;
 
         setBtn = FlatButton("⬆  SET", ColorTranslator.FromHtml("#B45309"),
-            new Point(476, 199), new Size(100, 30));
+            new Point(476, 371), new Size(100, 30));
         setBtn.Click += (s, e) => DoSet();
 
         revealBtn = FlatButton("👁", ColorTranslator.FromHtml("#1E293B"),
-            new Point(24, 236), new Size(44, 28));
+            new Point(24, 408), new Size(44, 28));
         revealBtn.Click += (s, e) => {
             revealed = !revealed;
             valueBox.UseSystemPasswordChar = !revealed;
@@ -1971,7 +2020,7 @@ class SecretGrabberForm : Form
         };
 
         copyBtn = FlatButton("⧉  COPY", ColorTranslator.FromHtml("#1E293B"),
-            new Point(76, 236), new Size(100, 28));
+            new Point(76, 408), new Size(100, 28));
         copyReset.Tick += (s, e) => { copyReset.Stop(); copyBtn.Text = "⧉  COPY"; };
         copyBtn.Click += (s, e) => {
             if (string.IsNullOrEmpty(currentValue)) return;
@@ -1985,9 +2034,10 @@ class SecretGrabberForm : Form
         };
 
         status = new Label {
-            Text = "GET a secret by name, or type a value and SET to write it to the "
-                 + "vault. Requires an interactive az login with Key Vault Secrets access.",
-            AutoSize = false, Location = new Point(24, 280), Size = new Size(552, 108),
+            Text = "Type to search secret names, click one to GET it — or type a "
+                 + "value and SET to write it back. Needs an interactive az login "
+                 + "with Key Vault Secrets access.",
+            AutoSize = false, Location = new Point(24, 448), Size = new Size(552, 96),
             ForeColor = ColorTranslator.FromHtml("#64748B"),
             Font = new Font("Segoe UI", 9F), BackColor = Color.Transparent };
 
@@ -1997,7 +2047,10 @@ class SecretGrabberForm : Form
         Controls.Add(vaultVal);
         Controls.Add(nameLabel);
         Controls.Add(nameBox);
+        Controls.Add(listBtn);
         Controls.Add(getBtn);
+        Controls.Add(countLabel);
+        Controls.Add(secretList);
         Controls.Add(valueLabel);
         Controls.Add(valueBox);
         Controls.Add(setBtn);
@@ -2005,7 +2058,140 @@ class SecretGrabberForm : Form
         Controls.Add(copyBtn);
         Controls.Add(status);
         ActiveControl = nameBox;
-        nameBox.SelectAll();
+
+        // Load cached secret names; if there are none yet, list once from the vault.
+        secretNames = LoadSecretNamesCache();
+        if (secretNames.Count > 0)
+        {
+            FilterSecrets();
+            SetStatus("Loaded " + secretNames.Count + " secret names from cache. "
+                + "Type to search, click one to GET — ↻ LIST to refresh.",
+                ColorTranslator.FromHtml("#38BDF8"));
+        }
+        else
+        {
+            RefreshSecretNames();
+        }
+    }
+
+    // Load the cached secret names (one per line). Values are never cached.
+    static List<string> LoadSecretNamesCache()
+    {
+        try
+        {
+            if (File.Exists(SecretsCacheFile()))
+                return File.ReadAllLines(SecretsCacheFile())
+                    .Select(l => l.Trim()).Where(l => l.Length > 0)
+                    .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+        }
+        catch { }
+        return new List<string>();
+    }
+
+    // Rebuild secretList from secretNames, keeping only names that contain the
+    // current query (case-insensitive substring). Updates the count label.
+    void FilterSecrets()
+    {
+        if (secretList == null) return;
+        string q = (nameBox.Text ?? "").Trim();
+        var matches = (q.Length == 0
+            ? secretNames
+            : secretNames.Where(n => n.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0))
+            .ToList();
+
+        secretList.BeginUpdate();
+        secretList.Items.Clear();
+        foreach (var n in matches) secretList.Items.Add(n);
+        secretList.EndUpdate();
+
+        if (secretNames.Count == 0)
+            countLabel.Text = "";
+        else if (q.Length == 0)
+            countLabel.Text = secretNames.Count + " secrets";
+        else
+            countLabel.Text = matches.Count + " of " + secretNames.Count + " secrets";
+    }
+
+    // Fill the name box from a clicked/entered list item and fetch it.
+    void PickAndGet(string name)
+    {
+        nameBox.Text = name;   // TextChanged refilters the list to this name
+        DoGet();
+    }
+
+    // List every secret NAME in the vault (names only, no values) on a background
+    // thread, cache them, and repopulate the dropdown.
+    void RefreshSecretNames()
+    {
+        listBtn.Enabled = false; getBtn.Enabled = false; setBtn.Enabled = false;
+        listBtn.Text = "…";
+        SetStatus("Listing secret names in " + VaultName + " …",
+            ColorTranslator.FromHtml("#38BDF8"));
+
+        string args = "/c az keyvault secret list --vault-name " + VaultName
+                    + " --query \"[].name\" -o tsv";
+
+        var t = new System.Threading.Thread(() =>
+        {
+            string outp = "", err = "";
+            int code = -1;
+            bool timedOut = false;
+            try
+            {
+                var psi = new ProcessStartInfo("cmd.exe", args)
+                {
+                    UseShellExecute = false, CreateNoWindow = true,
+                    RedirectStandardOutput = true, RedirectStandardError = true
+                };
+                using (var p = Process.Start(psi))
+                {
+                    outp = p.StandardOutput.ReadToEnd();
+                    err = p.StandardError.ReadToEnd();
+                    if (!p.WaitForExit(60000)) { timedOut = true; try { p.Kill(); } catch { } }
+                    else code = p.ExitCode;
+                }
+            }
+            catch (Exception ex) { err = ex.Message; }
+
+            try { BeginInvoke((Action)(() => ListDone(outp, err, code, timedOut))); }
+            catch { }   // form closed before the call returned
+        }) { IsBackground = true };
+        t.Start();
+    }
+
+    void ListDone(string outp, string err, int code, bool timedOut)
+    {
+        listBtn.Enabled = true; getBtn.Enabled = true; setBtn.Enabled = true;
+        listBtn.Text = "↻  LIST";
+
+        if (timedOut)
+        {
+            SetStatus("Timed out after 60s waiting for az. Is the CLI installed and logged in?",
+                ColorTranslator.FromHtml("#F87171"));
+            return;
+        }
+
+        if (code == 0)
+        {
+            secretNames = (outp ?? "")
+                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(l => l.Trim()).Where(l => l.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            try { File.WriteAllLines(SecretsCacheFile(), secretNames.ToArray()); } catch { }
+            FilterSecrets();
+            SetStatus("✓ Loaded " + secretNames.Count + " secret names from " + VaultName
+                + ". Type to search, click one to GET.",
+                ColorTranslator.FromHtml("#34D399"));
+        }
+        else
+        {
+            string msg = (err ?? "").Trim();
+            if (msg.Length == 0) msg = "Couldn't list secrets (exit " + code + ").";
+            SetStatus("✗ " + msg, ColorTranslator.FromHtml("#F87171"));
+        }
     }
 
     // Flat dark-theme button (the default WinForms button is black-on-grey and

@@ -17,6 +17,7 @@ telling it to auto-start the app.
 | `.env.example` | Committed template for `.env` with placeholder values. |
 | `logic-apps.txt` | **Git-ignored cache** for the 🧩 Logic Apps launcher: one **Standard** workflow name per line. Written by the ↻ REPULL button (and auto-created on first open if absent) so the repo isn't rescanned every time. Re-sorted case-insensitively on load. Safe to delete (repull rebuilds it). |
 | `logic-apps-consumption.txt` | **Git-ignored cache** for the 🧩 launcher's **Consumption** logic apps: `name\|resourceGroup` per line. Written by ↻ REPULL from an `az resource list` query over the subscription (each consumption app lives in its own resource group). Safe to delete (repull rebuilds it). |
+| `secrets.txt` | **Git-ignored cache** for the 🔑 Token Manager's searchable name list: one Key Vault secret **name** per line (names only, never values). Written by the ↻ LIST button from `az keyvault secret list`. Safe to delete (LIST rebuilds it). |
 | `DevLauncher.ico` | App icon (blue rounded tile + ⚡). Embedded in the exe and used by the shortcuts. |
 | `AppLauncher.ps1` | **Legacy / unused.** The original PowerShell+WPF version. The exe no longer reads it. Kept for reference; safe to delete. |
 | `Launch.vbs` | **Legacy / unused.** Old no-flash launcher for the PS1 version. |
@@ -138,6 +139,15 @@ Gold 🔑 button in the header, right of the 🧩 launcher. Opens `SecretGrabber
 Vault name from `.env` (`KEYVAULT_NAME`). Requires an interactive `az login` with
 Key Vault Secrets access (Secrets User for GET, Secrets Officer for SET).
 
+- **Searchable secret list.** The SECRET NAME box doubles as a search box: typing
+  filters a live dropdown (`secretList`) of the vault's secret **names** below it
+  (case-insensitive substring; a count label shows "N secrets" / "M of N"). Single-
+  clicking a name (or Enter on a selected one) fills the name box and immediately
+  GETs it; Down-arrow from the name box jumps into the list. The names come from
+  `az keyvault secret list --query "[].name" -o tsv` and are cached in `secrets.txt`
+  (names only, never values — git-ignored). **↻ LIST** re-queries the vault and
+  rewrites the cache (60s timeout, buttons disabled while it runs, background
+  thread). On open the cache loads; if it's empty the form lists once automatically.
 - **GET** runs `az keyvault secret show --query value -o tsv` for the named secret
   and fills the VALUE box (masked; 👁 reveals, ⧉ COPY copies). Unchanged behavior.
 - **SET** writes the VALUE box back under SECRET NAME (`az keyvault secret set`),

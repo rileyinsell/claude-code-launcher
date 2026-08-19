@@ -1036,9 +1036,14 @@ class LauncherForm : Form
         // Lead-ins are prepended to the prompt TEXT (last one added ends up first),
         // and the /loop prefix goes in FRONT of everything — claude only parses a
         // slash command at position 0. Desired final order is:
-        //   /loop <N>m  Read CLAUDE.md first.  Use the last available handoff…  <prompt>
-        // so prepend handoff first, then CLAUDE.md, then /loop (reverse of display).
-        // (both instructions ride inside the looped prompt and survive.)
+        //   /loop <N>m  Read CLAUDE.md first.  Use the last available handoff…  <Fable rule>  <prompt>
+        // so prepend Fable rule first, then handoff, then CLAUDE.md, then /loop
+        // (reverse of display). (all instructions ride inside the looped prompt and survive.)
+        // When Fable is the picked model, prepend the orchestration rule so Fable
+        // plans + delegates to Opus rather than implementing everything itself.
+        // Prepended first so it sits directly in front of the task prompt.
+        if (opts.Model == "claude-fable-5")
+            prompt = FableOrchestratorPreamble + prompt;
         if (opts.Handoff)
             prompt = "Use the last available handoff to catch up on where things left off. " + prompt;
         // Skip the CLAUDE.md prepend if the prompt already mentions CLAUDE.md (the
@@ -1061,6 +1066,24 @@ class LauncherForm : Form
         "Default model", "Opus 5", "Opus 4.8", "Fable 5", "Sonnet 5", "Haiku 4.5" };
     static readonly string[] ModelIds = {
         "", "claude-opus-5", "claude-opus-4-8", "claude-fable-5", "claude-sonnet-5", "claude-haiku-4-5" };
+
+    // Prepended to the prompt when Fable is the selected model (see LaunchWithPrompt).
+    // Fable runs as orchestrator/planner/reviewer and delegates real work to Opus.
+    const string FableOrchestratorPreamble =
+        "You are running as Fable, the orchestrator, planner, and final reviewer for this task — " +
+        "not the primary implementation agent. First understand the request, inspect the relevant " +
+        "context, and form the overall plan. Then break the work into well-defined sub-tasks and " +
+        "delegate substantive implementation, investigation, coding, testing, and analysis to Opus " +
+        "sub-agents, giving each enough context, requirements, constraints, and acceptance criteria " +
+        "to finish independently. Delegate independent workstreams in parallel when it's safe to do " +
+        "so. Use Sonnet only for small, low-risk, mechanical sub-tasks — never for complex " +
+        "implementation, architectural decisions, hard debugging, or work needing deep reasoning. " +
+        "Spend your own intelligence on planning, judgment, integration, and quality control rather " +
+        "than large implementation you can delegate. Review and integrate what sub-agents return " +
+        "instead of accepting it blindly; if delegated work is incomplete or wrong, send it back or " +
+        "delegate a fresh agent rather than lowering the bar. Run or delegate the necessary tests and " +
+        "verification, then do a final review of the combined work to confirm it satisfies the " +
+        "original request and introduces no regressions. Your actual task: ";
 
     // Flat dark-theme dialog button. The default WinForms button renders black
     // text on the system grey and is unreadable on these dark dialogs.

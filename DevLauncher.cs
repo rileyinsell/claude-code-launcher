@@ -1343,14 +1343,17 @@ class LauncherForm : Form
             + "{ Remove-Item ('Env:' + $__v) -ErrorAction SilentlyContinue } }; "
             + "Remove-Item Env:NO_COLOR, Env:FORCE_COLOR -ErrorAction SilentlyContinue; ";
 
-        // The app named "mixotrophic" launches under the SECOND Claude account:
-        // `claudeba` is a PowerShell profile function that points CLAUDE_CONFIG_DIR
-        // at C:\Users\User\.claude-ba and adds --dangerously-skip-permissions. It
-        // sets its own config dir when invoked, which is AFTER envScrub wipes CLAUDE*
-        // vars in the tab, so the account switch survives. Every other app stays on
-        // `claude` (the default account). Match by name only, case-insensitively.
-        string cli = string.Equals(a.Name, "mixotrophic", StringComparison.OrdinalIgnoreCase)
-            ? "claudeba" : "claude";
+        // The apps "mixotrophic" and "rileys-orchestrator" launch under the SECOND
+        // Claude account: `claudeba` is a PowerShell profile function that points
+        // CLAUDE_CONFIG_DIR at C:\Users\User\.claude-ba and adds
+        // --dangerously-skip-permissions. It sets its own config dir when invoked,
+        // which is AFTER envScrub wipes CLAUDE* vars in the tab, so the account
+        // switch survives. Every other app stays on `claude` (the default account).
+        // Match by name only, case-insensitively.
+        bool useBaAccount =
+            string.Equals(a.Name, "mixotrophic", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(a.Name, "rileys-orchestrator", StringComparison.OrdinalIgnoreCase);
+        string cli = useBaAccount ? "claudeba" : "claude";
 
         // `--` ends claude's option parsing so a prompt that starts with '-'
         // (e.g. a pasted markdown bullet) is taken as the prompt, not a flag.

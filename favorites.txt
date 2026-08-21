@@ -4,3 +4,6 @@ C:\Dev\aithena-train
 C:\Dev\insellerate-databricks
 C:\Dev\insellerate-logic-apps
 C:\Dev\aithena-agent
+C:\Dev\insellerate-web-app
+C:\Dev\aithena-call-cadence
+C:\Dev\aithena-llm

@@ -1404,6 +1404,13 @@ class LauncherForm : Form
     // the new tab reads (and deletes) before starting claude.
     const int InlinePromptMax = 1500;
 
+    // Above this many escaped chars a prompt no longer fits claude.exe's OWN Windows
+    // command line (~32767 total for CreateProcess), which fails with Win32 206
+    // ("filename or extension is too long") when claude/claudeba is finally invoked.
+    // Kept a bit under the hard cap so the profile function's own flags still fit.
+    // Oversize prompts are handed to claude through a file instead (see Launch).
+    const int CmdLinePromptMax = 31000;
+
     void Launch(AppEntry a)
     {
         RecordUsage(a.Name);
@@ -1423,9 +1430,33 @@ class LauncherForm : Form
         // to a native exe without escaping embedded double quotes, so the argv
         // escaping must already be baked into the text — the exact same trick as
         // PsPromptArg, just without the single-quote layer (no PS literal involved).
-        string escaped = WinArgInner(NormalizeQuotes(a.Prompt ?? ""));
+        string raw = NormalizeQuotes(a.Prompt ?? "");
+        string escaped = WinArgInner(raw);
         string promptExpr = null, readCmd = "";
-        if (escaped.Length > InlinePromptMax)
+
+        // If the prompt is too large to ride claude.exe's own command line, write it
+        // to a .md file in the project folder and hand claude a short note pointing at
+        // it (the -EncodedCommand temp-file path below only shrinks the OUTER
+        // PowerShell command, not the argument claude finally receives). Small prompts
+        // are still passed inline, verbatim.
+        if (escaped.Length > CmdLinePromptMax)
+        {
+            try
+            {
+                string pf = Path.Combine(a.Path,
+                    ".devlauncher-prompt-" + Guid.NewGuid().ToString("N") + ".md");
+                File.WriteAllText(pf, raw, new UTF8Encoding(false));
+                string note = "Your initial prompt was too long to pass on the command "
+                    + "line, so it was saved next to you. Read the file '"
+                    + Path.GetFileName(pf) + "' in the current directory in full — its "
+                    + "contents are your instructions for this session — then follow them "
+                    + "and delete that file.";
+                promptExpr = "'" + WinArgInner(note).Replace("'", "''") + "'";
+            }
+            catch { promptExpr = null; }   // write failed -> try the normal paths below
+        }
+
+        if (promptExpr == null && escaped.Length > InlinePromptMax)
         {
             try
             {

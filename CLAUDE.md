@@ -258,14 +258,26 @@ Build target is .NET Framework `csc` (always present on Windows). `winexe` = no 
   and passes them to every tab it opens. `Launch()` now scrubs `CLAUDE*`, `NO_COLOR`, and
   `FORCE_COLOR` from the tab's environment (the `envScrub` block) before starting claude,
   so launches are clean no matter where the launcher was started from.
-- **Huge prompts can't ride the command line.** Windows caps a command line around 32K chars;
-  a long pasted prompt (UTF-16LE + Base64 into `-EncodedCommand`) blows past it and
-  `Process.Start` fails with Win32 error 206, which Windows reports as *"The filename or
-  extension is too long"*. `Launch()` now writes any prompt whose escaped form exceeds
-  `InlinePromptMax` (1500 chars) to `%TEMP%\DevLauncher\prompt-<guid>.txt`; the tab reads it
-  into `$__p`, deletes the file, and runs `claude -- $__p`. The file holds the
-  `WinArgInner`-escaped text (NOT the raw prompt): PowerShell passes a variable to a native
-  exe without escaping embedded `"`, so the argv escaping must already be baked in — same
-  trick as `PsPromptArg`, minus the single-quote layer.
+- **Huge prompts can't ride the command line — there are TWO length limits, handled
+  separately.** Windows caps a command line around 32K chars. `Launch()` handles prompts in
+  three tiers (the launch dialog's prompt box itself is uncapped — `MaxLength = 0`):
+  1. **Small** (escaped ≤ `InlinePromptMax`, 1500): passed inline, verbatim.
+  2. **Medium** (1500 < escaped ≤ `CmdLinePromptMax`, 31000): the *outer* `-EncodedCommand`
+     (UTF-16LE + Base64) would blow past 32K, so the prompt is written to
+     `%TEMP%\DevLauncher\prompt-<guid>.txt`; the tab reads it into `$__p`, deletes it, and
+     runs `claude -- $__p`. The file holds the `WinArgInner`-escaped text (NOT the raw
+     prompt): PowerShell passes a variable to a native exe without escaping embedded `"`, so
+     the argv escaping must already be baked in — same trick as `PsPromptArg`, minus the
+     single-quote layer. **This only shrinks the OUTER command** — the prompt still lands on
+     `claude.exe`'s own command line, so it can't fix tier 3.
+  3. **Too large for claude.exe's own argv** (escaped > `CmdLinePromptMax`): otherwise the
+     final `claude`/`claudeba` invocation fails *inside the tab* with Win32 206 (*"The
+     filename or extension is too long"*) — the profile function calls `claude.exe` with the
+     prompt as an argument, and that command line overflows. So `Launch()` writes the **raw**
+     prompt to `<project>\.devlauncher-prompt-<guid>.md` and passes claude a short note
+     telling it to read that file and delete it. The argv stays tiny, so a prompt can be any
+     size. Trade-off: a tier-3 prompt is read from a file rather than received directly, so a
+     leading slash command (e.g. `/loop`) in an oversize prompt won't be parsed — rare, since
+     oversize prompts are pasted mega-prompts, not slash commands.
 - The icon is generated with `System.Drawing`; `DrawString` needs a `RectangleF`, not a `Rectangle`.
 - XAML in the old PS version needed `xmlns:x` declared or `x:Name` fails to parse (legacy file only).

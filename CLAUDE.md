@@ -13,6 +13,7 @@ telling it to auto-start the app.
 | `recent.txt` | Auto-written on every launch (`name|ticks` per line). No longer drives startup ordering (tiles sort by folder modified date); a launch still moves its tile to the front for the current session. Safe to delete. |
 | `favorites.txt` | Starred folder paths, one per line. Written when a tile's ★ button is toggled. Starred projects show as pills in a favorites bar under the header, ordered by folder modified date. Safe to delete (nothing starred). |
 | `view.txt` | Grid view mode: `tiles` or `rows`. Written by the ▦/☰ toggle in the header. Safe to delete (defaults to tiles). |
+| `accounts.txt` | **Per-project Claude account/CLI override.** `folderPath\|cliCommand` per line (e.g. `C:\Dev\mixotrophic\|claudeba`). Written when a tile's account toggle (the **A**/**BA** button) is flipped. A project with no entry launches `claude` — except the legacy names `mixotrophic`/`rileys-orchestrator`, which default to `claudeba` until an explicit entry overrides them. Safe to delete (everything reverts to those defaults). |
 | `.env` | **Local config & secrets — git-ignored.** `KEY=VALUE` lines read by the `Env` class (`.env` next to the exe, loaded once, lazily). Holds the Logic Apps repo path + Azure ids (subscription/resource group/site/location) and the Key Vault name. Missing file/key falls back to a literal in code, so the app still runs without it. Copy `.env.example` → `.env` and fill in. |
 | `.env.example` | Committed template for `.env` with placeholder values. |
 | `logic-apps.txt` | **Git-ignored cache** for the 🧩 Logic Apps launcher: one **Standard** workflow name per line. Written by the ↻ REPULL button (and auto-created on first open if absent) so the repo isn't rescanned every time. Re-sorted case-insensitively on load. Safe to delete (repull rebuilds it). |
@@ -169,6 +170,18 @@ The header has a view toggle next to search. **Tiles** is the classic grid;
 · ★ ✎ 📁). Both carry `AppEntry` in `Control.Tag`, so search/filter/MRU work in
 either mode. Rows restretch on window resize. Persisted in `view.txt`;
 `BuildGrid()` rebuilds the whole grid whenever the mode flips.
+
+## Per-project account (the A / BA button)
+Each tile and row has a small account toggle in its action group (left of ★). It shows
+**A** (the default `claude` account, understated grey) or **BA** (the second account
+`claudeba`, glowing amber). Clicking it flips the project between the two and **auto-saves**
+immediately to `accounts.txt` — no dialog. `claudeba` is a PowerShell profile function that
+points `CLAUDE_CONFIG_DIR` at the second account and adds `--dangerously-skip-permissions`;
+it sets its own config dir *after* the tab's `envScrub` wipes `CLAUDE*` vars, so the switch
+survives. `Launch()` calls `AccountFor(app)` to pick the CLI: an explicit `accounts.txt`
+entry wins; otherwise the legacy names `mixotrophic`/`rileys-orchestrator` default to
+`claudeba`; otherwise `claude`. Adding a third account is a one-line change to `SecondCli`
+plus turning the toggle into a cycle (see `ToggleAccount`).
 
 ## Look & feel
 Neon-dark theme throughout: near-black base (`#070D1A`), cyan accents (`#22D3EE`),

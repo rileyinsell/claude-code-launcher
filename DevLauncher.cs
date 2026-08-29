@@ -111,6 +111,7 @@ class LauncherForm : Form
     Dictionary<string, DateTime> lastUsed;  // app name -> last launch (recent.txt)
     FlowLayoutPanel favBar; // starred-projects strip under the header
     HashSet<string> favorites;  // starred folder paths (favorites.txt)
+    Dictionary<string, string> accounts;  // folder path -> claude CLI command (accounts.txt)
     List<AppEntry> allApps;     // every tile's entry, sorted by Modified desc
     bool rowsMode;              // ☰ rows vs ▦ tiles; persisted in view.txt
     Label tilesBtn, rowsBtn;    // header view-mode toggle
@@ -237,6 +238,7 @@ class LauncherForm : Form
 
         lastUsed = LoadRecent();
         favorites = LoadFavorites();
+        accounts = LoadAccounts();
         rowsMode = LoadViewMode();
         // Entries come pre-sorted by folder modified date (newest first).
         allApps = LoadApps();
@@ -357,7 +359,7 @@ class LauncherForm : Form
             Text = app.Path, ForeColor = ColorTranslator.FromHtml("#8FA3C0"),
             Font = new Font("Segoe UI", 8.5F), AutoEllipsis = true, AutoSize = false,
             TextAlign = ContentAlignment.MiddleLeft,
-            Location = new Point(264, 0), Size = new Size(row.Width - 264 - 226, 44),
+            Location = new Point(264, 0), Size = new Size(row.Width - 264 - 258, 44),
             Anchor = AnchorStyles.Top | AnchorStyles.Bottom
                    | AnchorStyles.Left | AnchorStyles.Right,
             BackColor = Color.Transparent, Cursor = Cursors.Hand };
@@ -367,10 +369,11 @@ class LauncherForm : Form
             ForeColor = ColorTranslator.FromHtml("#64748B"),
             Font = new Font("Consolas", 8.5F), AutoSize = false,
             TextAlign = ContentAlignment.MiddleLeft,
-            Location = new Point(row.Width - 222, 0), Size = new Size(114, 44),
+            Location = new Point(row.Width - 254, 0), Size = new Size(114, 44),
             Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Right,
             BackColor = Color.Transparent, Cursor = Cursors.Hand };
 
+        var acctBtn = MakeAccountButton(app, new Point(row.Width - 132, 10));
         var starBtn = MakeStarButton(app, new Point(row.Width - 100, 10));
         var promptBtn = MakeActionButton("✎", new Point(row.Width - 68, 10));
         tip.SetToolTip(promptBtn, "Launch with a custom prompt…");
@@ -378,7 +381,7 @@ class LauncherForm : Form
         var folderBtn = MakeActionButton("📁", new Point(row.Width - 36, 10));
         tip.SetToolTip(folderBtn, "Browse project files…");
         folderBtn.Click += (s, e) => new FolderViewerForm(app).Show(this);
-        starBtn.Anchor = promptBtn.Anchor = folderBtn.Anchor =
+        acctBtn.Anchor = starBtn.Anchor = promptBtn.Anchor = folderBtn.Anchor =
             AnchorStyles.Top | AnchorStyles.Right;
 
         EventHandler click = (s, e) => Launch(app);
@@ -392,6 +395,7 @@ class LauncherForm : Form
         row.Controls.Add(name);
         row.Controls.Add(path);
         row.Controls.Add(mod);
+        row.Controls.Add(acctBtn);
         row.Controls.Add(starBtn);
         row.Controls.Add(promptBtn);
         row.Controls.Add(folderBtn);
@@ -471,6 +475,7 @@ class LauncherForm : Form
             Location = new Point(16, 47), Size = new Size(170, 14),
             BackColor = Color.Transparent, Cursor = Cursors.Hand };
 
+        var acctBtn = MakeAccountButton(app, new Point(64, 66));
         var starBtn = MakeStarButton(app, new Point(96, 66));
         var promptBtn = MakeActionButton("✎", new Point(128, 66));
         tip.SetToolTip(promptBtn, "Launch with a custom prompt…");
@@ -491,6 +496,7 @@ class LauncherForm : Form
         tile.Controls.Add(name);
         tile.Controls.Add(path);
         tile.Controls.Add(promptBtn);   // buttons added last -> sit on top
+        tile.Controls.Add(acctBtn);
         tile.Controls.Add(starBtn);
         tile.Controls.Add(folderBtn);
         return tile;
@@ -579,6 +585,107 @@ class LauncherForm : Form
         if (!favorites.Remove(app.Path)) favorites.Add(app.Path);
         SaveFavorites();
         RebuildFavBar();
+    }
+
+    // ---- per-project Claude account, persisted in accounts.txt next to the exe ----
+    //
+    // Which CLI a tile launches. `claude` is the default account; `claudeba` is a
+    // PowerShell profile function that points CLAUDE_CONFIG_DIR at the second
+    // account and adds --dangerously-skip-permissions (see the envScrub note in
+    // Launch()). The choice is per project, keyed by folder path, and only the
+    // non-default picks need to be stored — a project with no entry launches
+    // `claude`, unless it matches a legacy hardcoded name (kept as its default).
+    const string DefaultCli = "claude";
+    const string SecondCli  = "claudeba";
+
+    static string AccountsFile()
+    {
+        return Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), "accounts.txt");
+    }
+
+    // path|cli per line. Ignores blanks / comments / malformed lines so a hand-edit
+    // can't block startup.
+    static Dictionary<string, string> LoadAccounts()
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            string file = AccountsFile();
+            if (!File.Exists(file)) return map;
+            foreach (var line in File.ReadAllLines(file))
+            {
+                var s = line.Trim();
+                if (s.Length == 0 || s[0] == '#') continue;
+                int bar = s.IndexOf('|');
+                if (bar <= 0) continue;
+                string path = s.Substring(0, bar).Trim();
+                string cli = s.Substring(bar + 1).Trim();
+                if (path.Length > 0 && cli.Length > 0) map[path] = cli;
+            }
+        }
+        catch { }   // a broken accounts.txt must never block startup
+        return map;
+    }
+
+    void SaveAccounts()
+    {
+        try
+        {
+            var lines = new List<string>();
+            foreach (var kv in accounts) lines.Add(kv.Key + "|" + kv.Value);
+            File.WriteAllLines(AccountsFile(), lines.ToArray());
+        }
+        catch { }   // account overrides are a nicety; never crash over them
+    }
+
+    // Effective CLI command for a project: an explicit accounts.txt entry wins;
+    // otherwise the legacy hardcoded names default to the second account; otherwise
+    // the default `claude`.
+    string AccountFor(AppEntry app)
+    {
+        string cli;
+        if (accounts.TryGetValue(app.Path, out cli) && cli.Length > 0) return cli;
+        if (string.Equals(app.Name, "mixotrophic", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(app.Name, "rileys-orchestrator", StringComparison.OrdinalIgnoreCase))
+            return SecondCli;
+        return DefaultCli;
+    }
+
+    // Flip a project between the two accounts and persist immediately. The explicit
+    // choice always wins over the legacy default, so we store it either way.
+    string ToggleAccount(AppEntry app)
+    {
+        string next = AccountFor(app) == SecondCli ? DefaultCli : SecondCli;
+        accounts[app.Path] = next;
+        SaveAccounts();
+        return next;
+    }
+
+    static string AccountLabel(string cli) { return cli == SecondCli ? "BA" : "A"; }
+
+    // Default account reads understated; the second account glows amber so a tile
+    // launching under it is visible at a glance.
+    static void StyleAccountButton(Label b, string cli)
+    {
+        b.ForeColor = cli == SecondCli
+            ? ColorTranslator.FromHtml("#FBBF24") : ColorTranslator.FromHtml("#94A3B8");
+    }
+
+    // Account toggle: switches which claude CLI (account) this project launches.
+    Label MakeAccountButton(AppEntry app, Point at)
+    {
+        string cli = AccountFor(app);
+        var b = MakeActionButton(AccountLabel(cli), at);
+        b.Font = new Font("Segoe UI", 8.5F, FontStyle.Bold);   // fit "BA" in the 28px pad
+        StyleAccountButton(b, cli);
+        tip.SetToolTip(b, "Account: " + cli + "  (click to switch account)");
+        b.Click += (s, e) => {
+            string next = ToggleAccount(app);
+            b.Text = AccountLabel(next);
+            StyleAccountButton(b, next);
+            tip.SetToolTip(b, "Account: " + next + "  (click to switch account)");
+        };
+        return b;
     }
 
     // Repopulate the favorites strip: one pill per starred project,
@@ -1188,6 +1295,10 @@ class LauncherForm : Form
                 Location = new Point(24, 192), Size = new Size(592, 230),
                 Multiline = true, AcceptsReturn = true, WordWrap = true,
                 ScrollBars = ScrollBars.Vertical,
+                // 0 = no length cap (a multiline TextBox otherwise defaults to 32767
+                // chars, which silently truncates a long pasted prompt). Prompts too
+                // big for the command line already ride a temp file — see Launch().
+                MaxLength = 0,
                 BackColor = ColorTranslator.FromHtml("#0D1526"), ForeColor = fieldFore,
                 BorderStyle = BorderStyle.FixedSingle,
                 Font = new Font("Consolas", 10.5F) };
@@ -1343,17 +1454,14 @@ class LauncherForm : Form
             + "{ Remove-Item ('Env:' + $__v) -ErrorAction SilentlyContinue } }; "
             + "Remove-Item Env:NO_COLOR, Env:FORCE_COLOR -ErrorAction SilentlyContinue; ";
 
-        // The apps "mixotrophic" and "rileys-orchestrator" launch under the SECOND
-        // Claude account: `claudeba` is a PowerShell profile function that points
-        // CLAUDE_CONFIG_DIR at C:\Users\User\.claude-ba and adds
+        // Which Claude account/CLI this project launches under — the per-tile
+        // account toggle (accounts.txt), falling back to the legacy default for a
+        // couple of known names. `claudeba` is a PowerShell profile function that
+        // points CLAUDE_CONFIG_DIR at the second account and adds
         // --dangerously-skip-permissions. It sets its own config dir when invoked,
         // which is AFTER envScrub wipes CLAUDE* vars in the tab, so the account
-        // switch survives. Every other app stays on `claude` (the default account).
-        // Match by name only, case-insensitively.
-        bool useBaAccount =
-            string.Equals(a.Name, "mixotrophic", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(a.Name, "rileys-orchestrator", StringComparison.OrdinalIgnoreCase);
-        string cli = useBaAccount ? "claudeba" : "claude";
+        // switch survives. See AccountFor / MakeAccountButton.
+        string cli = AccountFor(a);
 
         // `--` ends claude's option parsing so a prompt that starts with '-'
         // (e.g. a pasted markdown bullet) is taken as the prompt, not a flag.

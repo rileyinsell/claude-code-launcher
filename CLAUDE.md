@@ -52,6 +52,12 @@ The ✎ button on tiles/pills opens a launch dialog with these fields:
 - **Read CLAUDE.md first (checkbox, default ON)** — prepends
   `Read CLAUDE.md first.` to the prompt. Skipped automatically if the prompt
   already mentions CLAUDE.md (the default prompts do), so it never stutters.
+- **Simple com (checkbox, default ON)** — prepends `ExecCommPreamble`, a rule
+  telling the session to communicate with Riley clearly and simply, like reports
+  to a busy executive (bold plain-English verdict first, short steps, jargon
+  translated inline, costs/status in the sentence, a one-line "Bottom line:",
+  plain hyphens only). Sits under "Read CLAUDE.md first" in the dialog. Saves
+  having to tell every new session how to report.
 - **Handoff (checkbox, default OFF)** — prepends a "use the last available
   handoff to catch up" instruction. Sits *after* the CLAUDE.md lead-in and
   *before* the initial prompt.
@@ -59,11 +65,12 @@ The ✎ button on tiles/pills opens a launch dialog with these fields:
   so the dialog can be used just to pick a model or rename the tab.
 
 Prompt composition order matters and is fixed in `LaunchWithPrompt()`:
-`/loop <N>m Read CLAUDE.md first. Use the last available handoff… <prompt>` —
+`/loop <N>m Read CLAUDE.md first. Use the last available handoff… <Simple-com rule> <Fable rule> <prompt>` —
 claude only parses a slash command at position 0, so `/loop` must come first and
-the CLAUDE.md + handoff instructions ride *inside* the looped prompt (loop being
-on can't break it). The prepends are applied in reverse of display order
-(handoff first, then CLAUDE.md, then `/loop`) so the final text reads top-down.
+the CLAUDE.md + handoff + simple-com instructions ride *inside* the looped prompt
+(loop being on can't break it). The prepends are applied in reverse of display
+order (Fable rule, then Simple-com, then handoff, then CLAUDE.md, then `/loop`)
+so the final text reads top-down.
 
 Dialog buttons are custom flat dark-theme buttons (`MakeDialogButton`) — default
 WinForms buttons render black-on-grey and are unreadable on the dark forms.

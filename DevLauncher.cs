@@ -25,11 +25,13 @@ class AppEntry
 // What the launch dialog hands back. Null prompt/model/tab all have defaults.
 // LoopMinutes 0 = no loop; ReadClaudeMd prepends a "Read CLAUDE.md first." lead-in.
 // Handoff prepends a "use the last available handoff" lead-in (after CLAUDE.md).
+// SimpleComm prepends an "always report clearly and simply, like to an executive" rule.
 class LaunchOptions
 {
     public string Prompt = "", Model = "", TabTitle = "";
     public bool ReadClaudeMd;
     public bool Handoff;
+    public bool SimpleComm;
     public int LoopMinutes;
 }
 
@@ -1151,6 +1153,10 @@ class LauncherForm : Form
         // Prepended first so it sits directly in front of the task prompt.
         if (opts.Model == "claude-fable-5")
             prompt = FableOrchestratorPreamble + prompt;
+        // Executive-style communication rule. Sits after CLAUDE.md/handoff and
+        // before the Fable rule in the final text (prepended here, before those).
+        if (opts.SimpleComm)
+            prompt = ExecCommPreamble + prompt;
         if (opts.Handoff)
             prompt = "Use the last available handoff to catch up on where things left off. " + prompt;
         // Skip the CLAUDE.md prepend if the prompt already mentions CLAUDE.md (the
@@ -1192,6 +1198,17 @@ class LauncherForm : Form
         "verification, then do a final review of the combined work to confirm it satisfies the " +
         "original request and introduces no regressions. Your actual task: ";
 
+    // Prepended to the prompt when the "Simple com" toggle is on (default). Instructs
+    // every session to report to Riley the way he approved: plain-English verdict first,
+    // short steps, jargon translated inline, plain hyphens only. Kept short but explicit.
+    const string ExecCommPreamble =
+        "In this whole session, communicate with me (Riley) clearly and simply, the way you " +
+        "would report to a busy executive, with no jargon walls. For every report: open with one " +
+        "bold plain-English verdict sentence, then short numbered or lettered steps; translate " +
+        "any technical term inline in parentheses; put costs, thresholds, and status in the " +
+        "sentence itself rather than an appendix; and close with a one-line \"Bottom line:\". " +
+        "Use plain hyphens only, never em or en dashes, in anything I read. ";
+
     // Flat dark-theme dialog button. The default WinForms button renders black
     // text on the system grey and is unreadable on these dark dialogs.
     static Button MakeDialogButton(string text, Color back, DialogResult result)
@@ -1225,7 +1242,7 @@ class LauncherForm : Form
             dlg.Text = "Launch " + appName;
             dlg.FormBorderStyle = FormBorderStyle.FixedDialog;
             dlg.StartPosition = FormStartPosition.CenterParent;
-            dlg.ClientSize = new Size(640, 500);
+            dlg.ClientSize = new Size(640, 522);
             dlg.MaximizeBox = false; dlg.MinimizeBox = false;
             dlg.BackColor = ColorTranslator.FromHtml("#0A0F1E");
 
@@ -1284,15 +1301,23 @@ class LauncherForm : Form
                 ForeColor = fieldFore, BackColor = Color.Transparent,
                 Font = new Font("Segoe UI", 9.5F), Cursor = Cursors.Hand };
 
-            var handoffCheck = new CheckBox {
-                Text = "Handoff", AutoSize = true, Checked = false,
+            // "Simple com" — on by default. Adds an executive-style communication rule
+            // (ExecCommPreamble) so every session reports to Riley clearly and simply.
+            var simpleCheck = new CheckBox {
+                Text = "Simple com", AutoSize = true, Checked = true,
                 Location = new Point(452, 158),
                 ForeColor = fieldFore, BackColor = Color.Transparent,
                 Font = new Font("Segoe UI", 9.5F), Cursor = Cursors.Hand };
 
-            var promptLabel = SectionLabel("INITIAL PROMPT", 24, 172);
+            var handoffCheck = new CheckBox {
+                Text = "Handoff", AutoSize = true, Checked = false,
+                Location = new Point(452, 180),
+                ForeColor = fieldFore, BackColor = Color.Transparent,
+                Font = new Font("Segoe UI", 9.5F), Cursor = Cursors.Hand };
+
+            var promptLabel = SectionLabel("INITIAL PROMPT", 24, 194);
             var box = new TextBox {
-                Location = new Point(24, 192), Size = new Size(592, 230),
+                Location = new Point(24, 214), Size = new Size(592, 230),
                 Multiline = true, AcceptsReturn = true, WordWrap = true,
                 ScrollBars = ScrollBars.Vertical,
                 // 0 = no length cap (a multiline TextBox otherwise defaults to 32767
@@ -1307,14 +1332,14 @@ class LauncherForm : Form
                 Text = "Leave the prompt empty to launch with this project's default prompt.",
                 ForeColor = ColorTranslator.FromHtml("#64748B"),
                 Font = new Font("Segoe UI", 8.5F), AutoSize = true,
-                Location = new Point(24, 430), BackColor = Color.Transparent };
+                Location = new Point(24, 452), BackColor = Color.Transparent };
 
             var start = MakeDialogButton("▶  START", ColorTranslator.FromHtml("#0891B2"),
                 DialogResult.OK);
-            start.Location = new Point(386, 452); start.Size = new Size(128, 36);
+            start.Location = new Point(386, 474); start.Size = new Size(128, 36);
             var cancel = MakeDialogButton("CANCEL", ColorTranslator.FromHtml("#1E293B"),
                 DialogResult.Cancel);
-            cancel.Location = new Point(524, 452); cancel.Size = new Size(92, 36);
+            cancel.Location = new Point(524, 474); cancel.Size = new Size(92, 36);
 
             dlg.Controls.Add(header);
             dlg.Controls.Add(divider);
@@ -1326,6 +1351,7 @@ class LauncherForm : Form
             dlg.Controls.Add(loopBox);
             dlg.Controls.Add(minLabel);
             dlg.Controls.Add(claudeMdCheck);
+            dlg.Controls.Add(simpleCheck);
             dlg.Controls.Add(handoffCheck);
             dlg.Controls.Add(promptLabel);
             dlg.Controls.Add(box);
@@ -1343,6 +1369,7 @@ class LauncherForm : Form
                 TabTitle = tabBox.Text.Trim(),
                 ReadClaudeMd = claudeMdCheck.Checked,
                 Handoff = handoffCheck.Checked,
+                SimpleComm = simpleCheck.Checked,
                 LoopMinutes = loopCheck.Checked ? (int)loopBox.Value : 0 };
         }
     }

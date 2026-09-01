@@ -42,7 +42,7 @@ If `wt.exe` isn't available it falls back to a plain `powershell.exe` window.
 
 ## Launch dialog (the ✎ button)
 The ✎ button on tiles/pills opens a launch dialog with these fields:
-- **Model dropdown** — Default / Opus 4.8 / Fable 5 / Sonnet 5 / Haiku 4.5.
+- **Model dropdown** — Default / Opus 5 / Opus 4.8 / Fable 5.1 / Fable 5 / Sonnet 5 / Haiku 4.5.
   Non-default picks add `--model <id>` to the claude command (ids in the
   `ModelIds` array in `DevLauncher.cs` — update there when models change).
 - **Tab name (optional)** — overrides the terminal tab/window title for this

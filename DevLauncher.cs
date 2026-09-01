@@ -1151,7 +1151,7 @@ class LauncherForm : Form
         // When Fable is the picked model, prepend the orchestration rule so Fable
         // plans + delegates to Opus rather than implementing everything itself.
         // Prepended first so it sits directly in front of the task prompt.
-        if (opts.Model == "claude-fable-5")
+        if (opts.Model == "claude-fable-5" || opts.Model == "claude-fable-5-1")
             prompt = FableOrchestratorPreamble + prompt;
         // Executive-style communication rule. Sits after CLAUDE.md/handoff and
         // before the Fable rule in the final text (prepended here, before those).
@@ -1176,9 +1176,9 @@ class LauncherForm : Form
     // Model choices offered in the launch dialog. Labels are what's shown;
     // ids are passed to `claude --model`. Empty id = no flag (CLI default).
     static readonly string[] ModelLabels = {
-        "Default model", "Opus 5", "Opus 4.8", "Fable 5", "Sonnet 5", "Haiku 4.5" };
+        "Default model", "Opus 5", "Opus 4.8", "Fable 5.1", "Fable 5", "Sonnet 5", "Haiku 4.5" };
     static readonly string[] ModelIds = {
-        "", "claude-opus-5", "claude-opus-4-8", "claude-fable-5", "claude-sonnet-5", "claude-haiku-4-5" };
+        "", "claude-opus-5", "claude-opus-4-8", "claude-fable-5-1", "claude-fable-5", "claude-sonnet-5", "claude-haiku-4-5" };
 
     // Prepended to the prompt when Fable is the selected model (see LaunchWithPrompt).
     // Fable runs as orchestrator/planner/reviewer and delegates real work to Opus.

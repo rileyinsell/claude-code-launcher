@@ -7,3 +7,5 @@ C:\Dev\aithena-agent
 C:\Dev\insellerate-web-app
 C:\Dev\aithena-call-cadence
 C:\Dev\aithena-llm
+C:\Dev\sys-admin
+C:\Dev\insellerate-mcp

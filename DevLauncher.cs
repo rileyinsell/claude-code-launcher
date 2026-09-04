@@ -2652,6 +2652,10 @@ class LogicAppsForm : Form
     // merged and sorted by name for display.
     List<LaItem> items = new List<LaItem>();
 
+    // Set by GitPull() when a repo pull was skipped/failed; appended to the final
+    // REPULL status so a stale Standard list is never silent. Empty = pull was fine.
+    string gitPullNote = "";
+
     static readonly Color Red      = ColorTranslator.FromHtml("#F87171");
     static readonly Color Green    = ColorTranslator.FromHtml("#34D399");
     static readonly Color Cyan     = ColorTranslator.FromHtml("#38BDF8");
@@ -2834,7 +2838,68 @@ class LogicAppsForm : Form
     // Rescan the repo's immediate subfolders (Standard, synchronous + fast) and
     // rewrite that cache, then kick off the az query for Consumption logic apps
     // on a background thread so the UI never freezes.
+    // REPULL entry point. Always pulls the latest from git FIRST (so the Standard
+    // list can't go stale just because the local repo is behind), then rescans the
+    // folder. The pull is off the UI thread because it hits the network; when it
+    // returns we scan on the UI thread and continue into the Consumption query.
     void Repull()
+    {
+        gitPullNote = "";
+        if (repoPath.Length == 0 || !Directory.Exists(repoPath)) { RepullScan(); return; }
+
+        repullBtn.Enabled = false;
+        SetStatus("Pulling latest from git…", Cyan);
+        var t = new System.Threading.Thread(() =>
+        {
+            GitPull();   // synchronous; sets gitPullNote on skip/failure
+            try { BeginInvoke((Action)(() => { repullBtn.Enabled = true; RepullScan(); })); }
+            catch { }
+        }) { IsBackground = true };
+        t.Start();
+    }
+
+    // Fast-forward pull of the Logic Apps repo. --ff-only never creates a merge or
+    // rewrites history, and --autostash sets aside any uncommitted work before the
+    // pull and restores it after — so a pull can NEVER wipe local changes. If it
+    // can't fast-forward (diverged commits) it fails without changing anything.
+    // Best-effort: on any failure we note it and still scan whatever is on disk.
+    void GitPull()
+    {
+        try
+        {
+            string outp, err;
+            int code = RunGit("pull --ff-only --autostash", 60000, out outp, out err);
+            if (code == 0) return;   // pulled or already up to date
+            string m = (err ?? "").Trim();
+            if (m.Length == 0) m = (outp ?? "").Trim();
+            m = m.Split('\n')[0].Trim();
+            if (m.Length > 120) m = m.Substring(0, 120) + "…";
+            gitPullNote = "  (git pull skipped: " + (m.Length == 0 ? "code " + code : m) + ")";
+        }
+        catch (Exception ex) { gitPullNote = "  (git pull skipped: " + ex.Message + ")"; }
+    }
+
+    // Run git in the repo folder and capture its output. repoPath is the working
+    // directory so git finds the repo root even though repoPath is a subfolder.
+    int RunGit(string args, int timeoutMs, out string outp, out string err)
+    {
+        outp = ""; err = "";
+        var psi = new ProcessStartInfo("git", args)
+        {
+            UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true,
+            WorkingDirectory = repoPath
+        };
+        using (var p = Process.Start(psi))
+        {
+            outp = p.StandardOutput.ReadToEnd();
+            err = p.StandardError.ReadToEnd();
+            if (!p.WaitForExit(timeoutMs)) { try { p.Kill(); } catch { } return -1; }
+            return p.ExitCode;
+        }
+    }
+
+    void RepullScan()
     {
         var standard = new List<LaItem>();
         if (repoPath.Length == 0)
@@ -2871,7 +2936,8 @@ class LogicAppsForm : Form
         if (subId.Length == 0)
         {
             SetStatus("Repulled " + standardCount + " Standard workflows. "
-                + "Set AZURE_SUBSCRIPTION_ID in .env to also list Consumption apps.",
+                + "Set AZURE_SUBSCRIPTION_ID in .env to also list Consumption apps."
+                + gitPullNote,
                 standardCount > 0 ? Green : Red);
             return;
         }
@@ -2921,7 +2987,8 @@ class LogicAppsForm : Form
         if (timedOut)
         {
             SetStatus("Repulled " + standardCount + " Standard workflows. Consumption "
-                + "query timed out after 120s — is az installed and logged in?", Red);
+                + "query timed out after 120s — is az installed and logged in?"
+                + gitPullNote, Red);
             return;
         }
         if (code != 0)
@@ -2929,7 +2996,7 @@ class LogicAppsForm : Form
             string msg = (err ?? "").Trim();
             if (msg.Length == 0) msg = "az exited " + code + ".";
             SetStatus("Repulled " + standardCount + " Standard workflows. "
-                + "Consumption query failed: " + msg, Red);
+                + "Consumption query failed: " + msg + gitPullNote, Red);
             return;
         }
 
@@ -2952,7 +3019,7 @@ class LogicAppsForm : Form
         var standard = items.Where(i => !i.Consumption).ToList();
         items = Sort(standard.Concat(consumption).ToList());
         ApplyFilter();
-        SetStatus("Repulled " + Describe() + " from the repo and az.", Green);
+        SetStatus("Repulled " + Describe() + " from the repo and az." + gitPullNote, Green);
     }
 
     // Case-insensitive substring filter; repopulates the ListBox and the count.

@@ -27,3 +27,4 @@ aithena-call-cadence | C:\Dev\aithena-call-cadence | Read CLAUDE.md and the late
 recruiting | C:\Dev\recruiting | Read CLAUDE.md and the latest file in sessions/ to catch up on history, then continue work. Track this session in sessions/ per the rules in CLAUDE.md, updating it after every turn.
 rileys-orchestrator | C:\Dev\rileys-orchestrator | Read CLAUDE.md and the latest file in sessions/ to catch up on history, then continue work. Track this session in sessions/ per the rules in CLAUDE.md, updating it after every turn.
 thesis-ai | C:\Dev\thesis-ai | Read CLAUDE.md and the latest file in sessions/ to catch up on history, then continue work. Track this session in sessions/ per the rules in CLAUDE.md, updating it after every turn.
+insellerate-mcp | C:\Dev\insellerate-mcp | Read CLAUDE.md and the latest file in sessions/ to catch up on history, then continue work. Track this session in sessions/ per the rules in CLAUDE.md, updating it after every turn.

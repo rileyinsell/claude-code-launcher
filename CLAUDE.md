@@ -127,13 +127,23 @@ by type — Standard cyan, Consumption amber. Items are `LaItem` objects (name +
     the classic resource blade `#@/resource/subscriptions/…/providers/
     Microsoft.Logic/workflows/<name>/logicApp` (the `logicApp` menu id is the
     consumption designer) using the item's **own** `Rg`, not `AZURE_RESOURCE_GROUP`.
-- **↻ REPULL** rescans the repo for Standard (synchronous, fast) and rewrites
-  `logic-apps.txt`, then fires the `az resource list` query for Consumption on a
-  **background thread** (120s timeout, button disabled while it runs) and rewrites
-  `logic-apps-consumption.txt`. Cached Consumption entries stay visible during the
-  query so the list never blanks. On open both caches load and merge; if both are
-  empty it auto-repulls once. Needs an interactive `az login` for the Consumption
-  half; the Standard half works offline.
+- **↻ REPULL** first **`git pull`s the Standard repo** so the list is always
+  current (the Standard source is a local folder scan, so a repo that's behind
+  silently hides new workflows). The pull runs on a **background thread** (60s
+  timeout, button disabled while it runs) via `git pull --ff-only --autostash`:
+  `--ff-only` never merges or rewrites history, and `--autostash` sets aside and
+  restores any uncommitted work, so **a pull can never wipe local changes** — if
+  it can't fast-forward (diverged commits) it fails harmlessly and the scan uses
+  whatever is on disk. Any skip/failure is appended to the final status as
+  `(git pull skipped: …)` (via the `gitPullNote` field) so a stale list is never
+  silent; `RunGit`/`GitPull` in `DevLauncher.cs` do the work. Then it rescans the
+  repo for Standard (synchronous, fast) and rewrites `logic-apps.txt`, then fires
+  the `az resource list` query for Consumption on a **background thread** (120s
+  timeout) and rewrites `logic-apps-consumption.txt`. Cached Consumption entries
+  stay visible during the query so the list never blanks. On open both caches load
+  and merge; if both are empty it auto-repulls once (which now also git-pulls).
+  Needs an interactive `az login` for the Consumption half; the Standard half
+  works offline (the git pull just fails harmlessly with no network).
 - **Config is `.env`-only** — nothing sensitive is compiled into the source. The
   literals passed to `Env.Get(...)` are non-secret fallbacks (empty for the
   Azure ids), so a missing `.env` degrades gracefully: Standard needs the repo

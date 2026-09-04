@@ -17,6 +17,7 @@ using System.Windows.Forms;
 class AppEntry
 {
     public string Name = "", Path = "", Prompt = "";
+    public string Provider = "Claude"; // Claude default; Codex selected only from the launch dialog
     public string Model = "";     // claude --model id; empty = CLI default
     public string TabTitle = "";  // terminal tab name override; empty = Name
     public DateTime Modified;
@@ -28,7 +29,7 @@ class AppEntry
 // SimpleComm prepends an "always report clearly and simply, like to an executive" rule.
 class LaunchOptions
 {
-    public string Prompt = "", Model = "", TabTitle = "";
+    public string Prompt = "", Provider = "Claude", Model = "", TabTitle = "";
     public bool ReadClaudeMd;
     public bool Handoff;
     public bool SimpleComm;
@@ -1151,8 +1152,11 @@ class LauncherForm : Form
         // When Fable is the picked model, prepend the orchestration rule so Fable
         // plans + delegates to Opus rather than implementing everything itself.
         // Prepended first so it sits directly in front of the task prompt.
-        if (opts.Model == "claude-fable-5" || opts.Model == "claude-fable-5-1")
+        if (opts.Provider == "Claude"
+            && (opts.Model == "claude-fable-5" || opts.Model == "claude-fable-5-1"))
             prompt = FableOrchestratorPreamble + prompt;
+        if (opts.Provider == "Codex" && opts.Model == "gpt-6-astra")
+            prompt = AstraOrchestratorPreamble + prompt;
         // Executive-style communication rule. Sits after CLAUDE.md/handoff and
         // before the Fable rule in the final text (prepended here, before those).
         if (opts.SimpleComm)
@@ -1169,16 +1173,25 @@ class LauncherForm : Form
 
         var oneOff = new AppEntry {
             Name = app.Name, Path = app.Path, Prompt = prompt,
-            Model = opts.Model, TabTitle = opts.TabTitle };
+            Provider = opts.Provider, Model = opts.Model, TabTitle = opts.TabTitle };
         Launch(oneOff);
     }
 
-    // Model choices offered in the launch dialog. Labels are what's shown;
+    static readonly string[] ProviderLabels = { "Claude", "Codex" };
+
+    // Claude model choices offered in the launch dialog. Labels are what's shown;
     // ids are passed to `claude --model`. Empty id = no flag (CLI default).
-    static readonly string[] ModelLabels = {
+    static readonly string[] ClaudeModelLabels = {
         "Default model", "Opus 5", "Opus 4.8", "Fable 5.1", "Fable 5", "Sonnet 5", "Haiku 4.5" };
-    static readonly string[] ModelIds = {
+    static readonly string[] ClaudeModelIds = {
         "", "claude-opus-5", "claude-opus-4-8", "claude-fable-5-1", "claude-fable-5", "claude-sonnet-5", "claude-haiku-4-5" };
+
+    // Codex model choices verified against Codex CLI 0.153.2 (`codex debug models`)
+    // and current OpenAI Codex docs. ids are passed to `codex -m`.
+    static readonly string[] CodexModelLabels = {
+        "Astra", "5.6 Sol", "5.6 Terra", "5.6 Luna", "5.3 Codex Spark", "5.5" };
+    static readonly string[] CodexModelIds = {
+        "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.3-codex-spark", "gpt-5.5" };
 
     // Prepended to the prompt when Fable is the selected model (see LaunchWithPrompt).
     // Fable runs as orchestrator/planner/reviewer and delegates real work to Opus.
@@ -1197,6 +1210,23 @@ class LauncherForm : Form
         "delegate a fresh agent rather than lowering the bar. Run or delegate the necessary tests and " +
         "verification, then do a final review of the combined work to confirm it satisfies the " +
         "original request and introduces no regressions. Your actual task: ";
+
+    // Prepended to the prompt when Astra is selected for Codex. Astra keeps the
+    // main-thread judgment role and delegates substantial parallel work to
+    // sub-agents through Codex's native multi-agent tooling when useful.
+    const string AstraOrchestratorPreamble =
+        "You are running as Astra, the orchestrator, planner, and final reviewer for this task. " +
+        "Use your strongest judgment on the main thread to understand the request, inspect the " +
+        "relevant context, and form the overall plan. Break substantial work into well-defined " +
+        "sub-tasks and delegate implementation, investigation, coding, testing, and analysis to " +
+        "Codex sub-agents when that will improve speed or quality. Give each sub-agent enough " +
+        "context, requirements, constraints, and acceptance criteria to finish independently. " +
+        "Delegate independent workstreams in parallel when it is safe to do so. Keep small, " +
+        "low-risk, mechanical tasks on the main thread when delegation would add overhead. Review " +
+        "and integrate what sub-agents return instead of accepting it blindly; if delegated work " +
+        "is incomplete or wrong, send it back or delegate a fresh agent. Run or delegate the " +
+        "necessary tests and verification, then do a final review of the combined work to confirm " +
+        "it satisfies the original request and introduces no regressions. Your actual task: ";
 
     // Prepended to the prompt when the "Simple com" toggle is on (default). Instructs
     // every session to report to Riley the way he approved: plain-English verdict first,
@@ -1259,14 +1289,21 @@ class LauncherForm : Form
                 Location = new Point(24, 52), Size = new Size(592, 2),
                 BackColor = ColorTranslator.FromHtml("#155E75") };
 
-            var modelLabel = SectionLabel("MODEL", 24, 70);
-            var modelBox = new ComboBox {
-                Location = new Point(24, 90), Size = new Size(280, 30),
+            var providerLabel = SectionLabel("PROVIDER", 24, 70);
+            var providerBox = new ComboBox {
+                Location = new Point(24, 90), Size = new Size(134, 30),
                 DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat,
                 BackColor = fieldBack, ForeColor = fieldFore,
                 Font = new Font("Segoe UI", 10.5F) };
-            modelBox.Items.AddRange(ModelLabels);
-            modelBox.SelectedIndex = 0;
+            providerBox.Items.AddRange(ProviderLabels);
+            providerBox.SelectedIndex = 0;
+
+            var modelLabel = SectionLabel("MODEL", 176, 70);
+            var modelBox = new ComboBox {
+                Location = new Point(176, 90), Size = new Size(128, 30),
+                DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat,
+                BackColor = fieldBack, ForeColor = fieldFore,
+                Font = new Font("Segoe UI", 10.5F) };
 
             var tabLabel = SectionLabel("TAB NAME  ·  OPTIONAL", 324, 70);
             var tabBox = new TextBox {
@@ -1315,6 +1352,21 @@ class LauncherForm : Form
                 ForeColor = fieldFore, BackColor = Color.Transparent,
                 Font = new Font("Segoe UI", 9.5F), Cursor = Cursors.Hand };
 
+            Action refreshModels = () => {
+                bool codex = providerBox.SelectedItem != null
+                    && providerBox.SelectedItem.ToString() == "Codex";
+                modelBox.BeginUpdate();
+                modelBox.Items.Clear();
+                modelBox.Items.AddRange(codex ? CodexModelLabels : ClaudeModelLabels);
+                modelBox.SelectedIndex = 0;
+                modelBox.EndUpdate();
+                loopCheck.Enabled = !codex;
+                loopBox.Enabled = !codex && loopCheck.Checked;
+                minLabel.Enabled = !codex;
+            };
+            providerBox.SelectedIndexChanged += (s, e) => refreshModels();
+            refreshModels();
+
             var promptLabel = SectionLabel("INITIAL PROMPT", 24, 194);
             var box = new TextBox {
                 Location = new Point(24, 214), Size = new Size(592, 230),
@@ -1343,6 +1395,8 @@ class LauncherForm : Form
 
             dlg.Controls.Add(header);
             dlg.Controls.Add(divider);
+            dlg.Controls.Add(providerLabel);
+            dlg.Controls.Add(providerBox);
             dlg.Controls.Add(modelLabel);
             dlg.Controls.Add(modelBox);
             dlg.Controls.Add(tabLabel);
@@ -1363,14 +1417,19 @@ class LauncherForm : Form
             dlg.ActiveControl = box;   // start typing the prompt immediately
 
             if (dlg.ShowDialog() != DialogResult.OK) return null;
+            bool pickedCodex = providerBox.SelectedItem != null
+                && providerBox.SelectedItem.ToString() == "Codex";
             return new LaunchOptions {
                 Prompt = box.Text.Trim(),
-                Model = ModelIds[modelBox.SelectedIndex],
+                Provider = pickedCodex ? "Codex" : "Claude",
+                Model = pickedCodex
+                    ? CodexModelIds[modelBox.SelectedIndex]
+                    : ClaudeModelIds[modelBox.SelectedIndex],
                 TabTitle = tabBox.Text.Trim(),
                 ReadClaudeMd = claudeMdCheck.Checked,
                 Handoff = handoffCheck.Checked,
                 SimpleComm = simpleCheck.Checked,
-                LoopMinutes = loopCheck.Checked ? (int)loopBox.Value : 0 };
+                LoopMinutes = !pickedCodex && loopCheck.Checked ? (int)loopBox.Value : 0 };
         }
     }
 
@@ -1438,6 +1497,23 @@ class LauncherForm : Form
     // Oversize prompts are handed to claude through a file instead (see Launch).
     const int CmdLinePromptMax = 31000;
 
+    string LaunchCli(AppEntry a)
+    {
+        bool codex = string.Equals(a.Provider, "Codex", StringComparison.OrdinalIgnoreCase);
+        if (codex)
+        {
+            string codexModel = (a.Model != null && a.Model.Length > 0)
+                ? " -m '" + PsSingleQuote(a.Model) + "'" : "";
+            return "codex --dangerously-bypass-approvals-and-sandbox"
+                 + " --ask-for-approval never --sandbox danger-full-access"
+                 + codexModel;
+        }
+
+        string claudeModel = (a.Model != null && a.Model.Length > 0)
+            ? " --model '" + PsSingleQuote(a.Model) + "'" : "";
+        return AccountFor(a) + claudeModel;
+    }
+
     void Launch(AppEntry a)
     {
         RecordUsage(a.Name);
@@ -1445,12 +1521,9 @@ class LauncherForm : Form
         // Tab/window title: the custom name from the launch dialog, else the app name.
         string title = (a.TabTitle != null && a.TabTitle.Length > 0) ? a.TabTitle : a.Name;
 
-        // PowerShell command the new tab runs: name the tab, cd in, start claude.
+        // PowerShell command the new tab runs: name the tab, cd in, start the selected agent.
         string name = PsSingleQuote(title);
         string path = PsSingleQuote(a.Path);
-        // Optional model override from the launch dialog -> `claude --model <id>`.
-        string model = (a.Model != null && a.Model.Length > 0)
-            ? " --model '" + PsSingleQuote(a.Model) + "'" : "";
 
         // Short prompts ride inline (as before). Long ones are written to a temp
         // file holding the WinArgInner-escaped text: PowerShell passes a variable
@@ -1518,16 +1591,17 @@ class LauncherForm : Form
         // points CLAUDE_CONFIG_DIR at the second account and adds
         // --dangerously-skip-permissions. It sets its own config dir when invoked,
         // which is AFTER envScrub wipes CLAUDE* vars in the tab, so the account
-        // switch survives. See AccountFor / MakeAccountButton.
-        string cli = AccountFor(a);
+        // switch survives. See AccountFor / MakeAccountButton. Codex launches use
+        // the same terminal host/profile, but always bypass approvals and sandboxing.
+        string cli = LaunchCli(a);
 
-        // `--` ends claude's option parsing so a prompt that starts with '-'
+        // `--` ends the agent's option parsing so a prompt that starts with '-'
         // (e.g. a pasted markdown bullet) is taken as the prompt, not a flag.
         string inner = "$Host.UI.RawUI.WindowTitle = '" + name + "'; "
                      + "Set-Location -LiteralPath '" + path + "'; "
                      + envScrub
                      + readCmd
-                     + cli + model + " -- " + promptExpr;
+                     + cli + " -- " + promptExpr;
         string enc = Convert.ToBase64String(Encoding.Unicode.GetBytes(inner));
 
         // Prefer Windows Terminal (named, suppressed-title tab); fall back to PowerShell.

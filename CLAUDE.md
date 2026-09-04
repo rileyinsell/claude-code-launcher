@@ -1,8 +1,8 @@
 # CLAUDE.md — Dev Launcher
 
 A tiny Windows desktop app that shows a tile per dev project. Clicking a tile opens
-a Windows Terminal tab in that project's folder and starts `claude` with a prompt
-telling it to auto-start the app.
+a Windows Terminal tab in that project's folder and starts `claude` by default with
+a prompt telling it to auto-start the app. The launch dialog can also start Codex.
 
 ## What's here
 | File | Role |
@@ -40,11 +40,19 @@ wt.exe -w 0 new-tab --title "<name>" --suppressApplicationTitle -d "<path>" powe
 `--suppressApplicationTitle` locks the tab name so `claude` can't overwrite it.
 If `wt.exe` isn't available it falls back to a plain `powershell.exe` window.
 
+Codex launches use the same `wt.exe` / PowerShell terminal path, with the agent
+command changed to `codex --dangerously-bypass-approvals-and-sandbox
+--ask-for-approval never --sandbox danger-full-access -m <model> -- <prompt>`.
+
 ## Launch dialog (the ✎ button)
 The ✎ button on tiles/pills opens a launch dialog with these fields:
+- **Provider dropdown** - Claude by default, or Codex.
 - **Model dropdown** — Default / Opus 5 / Opus 4.8 / Fable 5.1 / Fable 5 / Sonnet 5 / Haiku 4.5.
   Non-default picks add `--model <id>` to the claude command (ids in the
-  `ModelIds` array in `DevLauncher.cs` — update there when models change).
+  `ClaudeModelIds` array in `DevLauncher.cs` — update there when models change).
+  When Codex is selected, the dropdown switches to Astra / 5.6 Sol / 5.6 Terra /
+  5.6 Luna / 5.3 Codex Spark / 5.5, passed as `codex -m <id>`.
+  Astra prepends an orchestration rule like Fable, but for Codex sub-agents.
 - **Tab name (optional)** — overrides the terminal tab/window title for this
   launch only; empty = project name (current behavior).
 - **Loop every N min (checkbox + numeric)** — wraps the final prompt as

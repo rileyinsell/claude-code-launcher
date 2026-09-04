@@ -1505,7 +1505,6 @@ class LauncherForm : Form
             string codexModel = (a.Model != null && a.Model.Length > 0)
                 ? " -m '" + PsSingleQuote(a.Model) + "'" : "";
             return "codex --dangerously-bypass-approvals-and-sandbox"
-                 + " --ask-for-approval never --sandbox danger-full-access"
                  + codexModel;
         }
 

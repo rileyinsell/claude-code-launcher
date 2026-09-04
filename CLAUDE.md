@@ -42,7 +42,7 @@ If `wt.exe` isn't available it falls back to a plain `powershell.exe` window.
 
 Codex launches use the same `wt.exe` / PowerShell terminal path, with the agent
 command changed to `codex --dangerously-bypass-approvals-and-sandbox
---ask-for-approval never --sandbox danger-full-access -m <model> -- <prompt>`.
+-m <model> -- <prompt>`.
 
 ## Launch dialog (the ✎ button)
 The ✎ button on tiles/pills opens a launch dialog with these fields:

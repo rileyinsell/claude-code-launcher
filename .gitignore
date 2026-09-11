@@ -8,3 +8,8 @@ logic-apps-consumption.txt
 # 🔑 Token Manager cached secret NAMES (names only, never values;
 # rebuilt by the ↻ LIST button).
 secrets.txt
+
+# 🧱 Databricks Secrets browser: cached scope/key NAMES (names only, never
+# values) + the local audit log. Both rebuilt/appended by the app.
+databricks-secrets.txt
+databricks-secrets-audit.log

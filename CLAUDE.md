@@ -14,11 +14,13 @@ a prompt telling it to auto-start the app. The launch dialog can also start Code
 | `favorites.txt` | Starred folder paths, one per line. Written when a tile's ★ button is toggled. Starred projects show as pills in a favorites bar under the header, ordered by folder modified date. Safe to delete (nothing starred). |
 | `view.txt` | Grid view mode: `tiles` or `rows`. Written by the ▦/☰ toggle in the header. Safe to delete (defaults to tiles). |
 | `accounts.txt` | **Per-project Claude account/CLI override.** `folderPath\|cliCommand` per line (e.g. `C:\Dev\mixotrophic\|claudeba`). Written when a tile's account toggle (the **A**/**BA** button) is flipped. A project with no entry launches `claude` — except the legacy names `mixotrophic`/`rileys-orchestrator`, which default to `claudeba` until an explicit entry overrides them. Safe to delete (everything reverts to those defaults). |
-| `.env` | **Local config & secrets — git-ignored.** `KEY=VALUE` lines read by the `Env` class (`.env` next to the exe, loaded once, lazily). Holds the Logic Apps repo path + Azure ids (subscription/resource group/site/location) and the Key Vault name. Missing file/key falls back to a literal in code, so the app still runs without it. Copy `.env.example` → `.env` and fill in. |
+| `.env` | **Local config & secrets — git-ignored.** `KEY=VALUE` lines read by the `Env` class (`.env` next to the exe, loaded once, lazily). Holds the Logic Apps repo path + Azure ids (subscription/resource group/site/location), the Key Vault name, and the Databricks workspace host + token (`DATABRICKS_HOST`, `DATABRICKS_TOKEN`) for the 🧱 Secrets browser. Missing file/key falls back to a literal in code, so the app still runs without it. Copy `.env.example` → `.env` and fill in. |
 | `.env.example` | Committed template for `.env` with placeholder values. |
 | `logic-apps.txt` | **Git-ignored cache** for the 🧩 Logic Apps launcher: one **Standard** workflow name per line. Written by the ↻ REPULL button (and auto-created on first open if absent) so the repo isn't rescanned every time. Re-sorted case-insensitively on load. Safe to delete (repull rebuilds it). |
 | `logic-apps-consumption.txt` | **Git-ignored cache** for the 🧩 launcher's **Consumption** logic apps: `name\|resourceGroup` per line. Written by ↻ REPULL from an `az resource list` query over the subscription (each consumption app lives in its own resource group). Safe to delete (repull rebuilds it). |
 | `secrets.txt` | **Git-ignored cache** for the 🔑 Token Manager's searchable name list: one Key Vault secret **name** per line (names only, never values). Written by the ↻ LIST button from `az keyvault secret list`. Safe to delete (LIST rebuilds it). |
+| `databricks-secrets.txt` | **Git-ignored cache** for the 🧱 Databricks Secrets browser: one `scope\tkey` per line (names only, never values). Written by the ↻ LIST button from the Databricks REST API. Safe to delete (LIST rebuilds it). |
+| `databricks-secrets-audit.log` | **Git-ignored audit trail** for the 🧱 browser: one line per LIST/GET (`UTC-timestamp  user=…  ACTION`). Append-only, best-effort. Safe to delete. |
 | `DevLauncher.ico` | App icon (blue rounded tile + ⚡). Embedded in the exe and used by the shortcuts. |
 | `AppLauncher.ps1` | **Legacy / unused.** The original PowerShell+WPF version. The exe no longer reads it. Kept for reference; safe to delete. |
 | `Launch.vbs` | **Legacy / unused.** Old no-flash launcher for the PS1 version. |
@@ -189,6 +191,36 @@ Key Vault Secrets access (Secrets User for GET, Secrets Officer for SET).
 - The VALUE box is now editable; its `TextChanged` keeps `currentValue` in sync so
   ⧉ COPY always copies exactly what's shown (fetched or freshly typed).
 
+## Databricks Secrets browser (the 🧱 button)
+Databricks-red 🧱 button in the header, left of the 🧩 Logic Apps launcher. Opens
+`DatabricksSecretsForm` — a searchable list of **every secret scope/key in the
+workspace**; single-clicking (or Enter/▶ GET on) an entry fetches that secret's
+**value** (masked; 👁 reveals, ⧉ COPY VALUE copies; ⧉ scope/key copies the
+`scope/key` path). **Read-only — it never writes a secret** (no SET, unlike the
+🔑 Key Vault manager).
+
+- **Talks to the Databricks REST API directly with a PAT** — no CLI or `az`/
+  `databricks` login needed. `DATABRICKS_HOST` + `DATABRICKS_TOKEN` come from
+  `.env`; requests send `Authorization: Bearer <token>` over TLS 1.2 via
+  `HttpWebRequest`. JSON is parsed with `JavaScriptSerializer`
+  (**needs `/r:System.Web.Extensions.dll`** at build — see the rebuild command).
+- **↻ LIST enumerates everything**: `GET /api/2.0/secrets/scopes/list`, then
+  `GET /api/2.0/secrets/list?scope=<s>` per scope, on a background thread. Each
+  scope is wrapped in try/except — a scope the token can't read is reported in the
+  status ("N scope(s) not readable") instead of failing the whole list. Results
+  cache to `databricks-secrets.txt` (`scope\tkey` per line, **names only**).
+- **GET one value**: `GET /api/2.0/secrets/get?scope=<s>&key=<k>` on a background
+  thread; the response `value` is base64 — decoded to UTF-8 text for display.
+  Values come back for scopes the token has READ ACL on (verified working for
+  both `DATABRICKS`- and `AZURE_KEYVAULT`-backed scopes on the prod workspace).
+- **Search is client-side** over the cached list (scope OR key substring, case-
+  insensitive) so typing never hits the API — only ↻ LIST and GET do. This is
+  the desktop equivalent of the spec's "cache 5 min / don't hammer on keystroke".
+- **Audit**: every LIST and GET appends one line (`UTC-timestamp  user=<name>
+  ACTION`) to `databricks-secrets-audit.log`, best-effort (never blocks the op).
+- **Config is `.env`-only** — empty fallbacks in code, so a missing host/token
+  shows a "configure .env" status and disables the buttons rather than leaking.
+
 ## Tiles vs rows (the ▦ / ☰ toggle)
 The header has a view toggle next to search. **Tiles** is the classic grid;
 **rows** renders each project as a full-width line (name · path · modified date
@@ -249,7 +281,7 @@ of the prompt text (it's the delimiter). An apps.txt entry pointing outside
 $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 Get-Process DevLauncher -ErrorAction SilentlyContinue | Stop-Process -Force   # release the file first
 & $csc /nologo /target:winexe /out:DevLauncher.exe /win32icon:DevLauncher.ico `
-    /r:System.Windows.Forms.dll /r:System.Drawing.dll DevLauncher.cs
+    /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll DevLauncher.cs
 ```
 Build target is .NET Framework `csc` (always present on Windows). `winexe` = no console window.
 

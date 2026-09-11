@@ -5,9 +5,11 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
 // Standalone Dev Launcher. The window belongs to THIS exe (not powershell),
@@ -215,6 +217,16 @@ class LauncherForm : Form
         tip.SetToolTip(logicBtn, "Logic Apps — open a workflow in the Azure portal");
         logicBtn.Click += (s, e) => new LogicAppsForm().Show(this);
         header.Controls.Add(logicBtn);
+
+        // Databricks Secrets browser: red 🧱 button left of the Logic Apps tile.
+        // Opens a searchable list of every Databricks secret scope/key; clicking
+        // one GETs its value (masked, reveal + copy) via the Databricks REST API.
+        var dbxBtn = MakeViewButton("🧱", new Point(ClientSize.Width - 432, 20));
+        dbxBtn.BackColor = ColorTranslator.FromHtml("#EE3D2C");
+        dbxBtn.ForeColor = Color.White;
+        tip.SetToolTip(dbxBtn, "Databricks Secrets — search scopes/keys and GET a value");
+        dbxBtn.Click += (s, e) => new DatabricksSecretsForm().Show(this);
+        header.Controls.Add(dbxBtn);
 
         // favorites bar: pill per starred project, newest-modified first.
         // Hidden until something is starred. AutoSize so pills can wrap to a
@@ -2686,6 +2698,576 @@ class SecretGrabberForm : Form
             if (msg.Length == 0) msg = "Set failed (exit " + code + ").";
             SetStatus("✗ " + msg, ColorTranslator.FromHtml("#F87171"));
         }
+    }
+}
+
+// The 🧱 Databricks Secrets browser: lists EVERY secret scope/key in the
+// workspace and GETs a value on demand (masked, reveal + copy). Read-only — it
+// never writes a secret. Talks to the Databricks REST API directly with a PAT
+// from .env (DATABRICKS_HOST + DATABRICKS_TOKEN), so it needs no CLI/login.
+//
+// Search is client-side over a cached scope/key list (databricks-secrets.txt next
+// to the exe), so typing never hits the network — only ↻ LIST (enumerate) and
+// GET (fetch one value) do. A one-line audit entry (user + UTC timestamp + action)
+// is appended to databricks-secrets-audit.log on every LIST and GET.
+class DatabricksSecretsForm : Form
+{
+    // One secret's coordinates. Databricks secrets are two-level (scope + key);
+    // ToString() is what the ListBox renders.
+    class DbxSecret
+    {
+        public string Scope = "", Key = "";
+        public override string ToString() { return Scope + "   /   " + Key; }
+    }
+
+    // Workspace host + PAT from .env. The literals are non-secret empty fallbacks
+    // so a missing .env degrades to a clear "configure .env" status, never a leak.
+    static readonly string Host  = Env.Get("DATABRICKS_HOST", "").TrimEnd('/');
+    static readonly string Token = Env.Get("DATABRICKS_TOKEN", "");
+
+    static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
+
+    TextBox nameBox, valueBox;
+    Button getBtn, revealBtn, copyBtn, nameCopyBtn, listBtn;
+    ListBox secretList;
+    Label status, countLabel;
+    string currentValue;          // last fetched value, in memory only
+    bool revealed;
+    List<DbxSecret> secrets = new List<DbxSecret>();   // every scope/key (cache or LIST)
+    readonly Timer copyReset = new Timer { Interval = 1200 };
+
+    static string CacheFile()
+    {
+        return Path.Combine(Path.GetDirectoryName(Application.ExecutablePath),
+            "databricks-secrets.txt");
+    }
+    static string AuditFile()
+    {
+        return Path.Combine(Path.GetDirectoryName(Application.ExecutablePath),
+            "databricks-secrets-audit.log");
+    }
+
+    // One-line, best-effort audit trail. Never throws into the caller.
+    static void Audit(string action)
+    {
+        try
+        {
+            string line = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
+                + "\tuser=" + Environment.UserName + "\t" + action + Environment.NewLine;
+            File.AppendAllText(AuditFile(), line, new UTF8Encoding(false));
+        }
+        catch { }
+    }
+
+    public DatabricksSecretsForm()
+    {
+        Text = "Databricks Secrets";
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        StartPosition = FormStartPosition.CenterParent;
+        MaximizeBox = false; MinimizeBox = false;
+        ClientSize = new Size(600, 560);
+        BackColor = ColorTranslator.FromHtml("#0A0F1E");
+        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+
+        Color fieldBack = ColorTranslator.FromHtml("#111C33");
+        Color fieldFore = ColorTranslator.FromHtml("#E2E8F0");
+
+        var header = new Label {
+            Text = "🧱  DATABRICKS SECRETS",
+            ForeColor = ColorTranslator.FromHtml("#F87171"),
+            Font = new Font("Segoe UI", 14F, FontStyle.Bold),
+            AutoSize = true, Location = new Point(22, 16), BackColor = Color.Transparent };
+        var divider = new Panel {
+            Location = new Point(24, 50), Size = new Size(552, 2),
+            BackColor = ColorTranslator.FromHtml("#7F1D1D") };
+
+        var hostLabel = LauncherForm.SectionLabel("WORKSPACE", 24, 64);
+        var hostVal = new Label {
+            Text = Host.Length > 0 ? Host : "(set DATABRICKS_HOST in .env)",
+            AutoSize = true, Location = new Point(24, 82),
+            ForeColor = ColorTranslator.FromHtml("#94A3B8"),
+            Font = new Font("Consolas", 10F), BackColor = Color.Transparent };
+
+        // The search box filters the cached scope/key list live (no network).
+        var nameLabel = LauncherForm.SectionLabel("SCOPE / KEY  ·  TYPE TO SEARCH", 24, 116);
+        nameBox = new TextBox {
+            Location = new Point(24, 136), Size = new Size(330, 28),
+            BackColor = fieldBack, ForeColor = fieldFore,
+            BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 10.5F) };
+        nameBox.TextChanged += (s, e) => FilterSecrets();
+        nameBox.KeyDown += (s, e) => {
+            // Enter GETs the top filtered match; Down jumps into the list.
+            if (e.KeyCode == Keys.Enter) {
+                if (secretList.Items.Count > 0) PickAndGet((DbxSecret)secretList.Items[0]);
+                e.SuppressKeyPress = true;
+            }
+            else if (e.KeyCode == Keys.Down && secretList.Items.Count > 0) {
+                secretList.SelectedIndex = 0; secretList.Focus();
+                e.SuppressKeyPress = true;
+            }
+        };
+        nameBox.HandleCreated += (s, e) =>
+            LauncherForm.SendMessage(nameBox.Handle,
+                LauncherForm.EM_SETCUEBANNER, (IntPtr)1, "Search scopes & keys…");
+
+        listBtn = FlatButton("↻  LIST", ColorTranslator.FromHtml("#1E293B"),
+            new Point(362, 135), new Size(100, 30));
+        listBtn.Click += (s, e) => RefreshSecrets();
+
+        getBtn = FlatButton("▶  GET", ColorTranslator.FromHtml("#0891B2"),
+            new Point(476, 135), new Size(100, 30));
+        getBtn.Click += (s, e) => {
+            if (secretList.SelectedItem is DbxSecret) PickAndGet((DbxSecret)secretList.SelectedItem);
+            else if (secretList.Items.Count > 0) PickAndGet((DbxSecret)secretList.Items[0]);
+            else SetStatus("Type to search, then pick a scope/key to GET.",
+                ColorTranslator.FromHtml("#F87171"));
+        };
+
+        countLabel = new Label {
+            AutoSize = true, Location = new Point(24, 170),
+            ForeColor = ColorTranslator.FromHtml("#94A3B8"),
+            Font = new Font("Segoe UI", 9F), BackColor = Color.Transparent };
+
+        secretList = new ListBox {
+            Location = new Point(24, 190), Size = new Size(552, 150),
+            BorderStyle = BorderStyle.FixedSingle, IntegralHeight = false,
+            BackColor = ColorTranslator.FromHtml("#0D1526"),
+            ForeColor = ColorTranslator.FromHtml("#67E8F9"),
+            Font = new Font("Consolas", 10F), Cursor = Cursors.Hand };
+        secretList.MouseClick += (s, e) => {
+            int i = secretList.IndexFromPoint(e.Location);
+            if (i >= 0 && i < secretList.Items.Count) PickAndGet((DbxSecret)secretList.Items[i]);
+        };
+        secretList.KeyDown += (s, e) => {
+            if (e.KeyCode == Keys.Enter && secretList.SelectedItem is DbxSecret) {
+                PickAndGet((DbxSecret)secretList.SelectedItem); e.SuppressKeyPress = true;
+            }
+        };
+
+        var valueLabel = LauncherForm.SectionLabel("VALUE  ·  GET FILLS IT (READ-ONLY)", 24, 352);
+        valueBox = new TextBox {
+            Location = new Point(24, 372), Size = new Size(552, 28),
+            ReadOnly = true, UseSystemPasswordChar = true,
+            BackColor = fieldBack, ForeColor = fieldFore,
+            BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 10.5F) };
+
+        revealBtn = FlatButton("👁", ColorTranslator.FromHtml("#1E293B"),
+            new Point(24, 408), new Size(44, 28));
+        revealBtn.Click += (s, e) => {
+            revealed = !revealed;
+            valueBox.UseSystemPasswordChar = !revealed;
+            revealBtn.Text = revealed ? "🙈" : "👁";
+        };
+
+        copyBtn = FlatButton("⧉  COPY VALUE", ColorTranslator.FromHtml("#1E293B"),
+            new Point(76, 408), new Size(140, 28));
+        copyReset.Tick += (s, e) => { copyReset.Stop(); copyBtn.Text = "⧉  COPY VALUE"; };
+        copyBtn.Click += (s, e) => {
+            if (string.IsNullOrEmpty(currentValue)) return;
+            try { Clipboard.SetText(currentValue); copyBtn.Text = "✓  COPIED";
+                  copyReset.Stop(); copyReset.Start(); }
+            catch { }
+        };
+
+        nameCopyBtn = FlatButton("⧉  scope/key", ColorTranslator.FromHtml("#1E293B"),
+            new Point(224, 408), new Size(140, 28));
+        nameCopyBtn.Click += (s, e) => {
+            var sel = secretList.SelectedItem as DbxSecret;
+            if (sel == null && secretList.Items.Count > 0) sel = secretList.Items[0] as DbxSecret;
+            if (sel == null) return;
+            try { Clipboard.SetText(sel.Scope + "/" + sel.Key); } catch { }
+        };
+
+        status = new Label {
+            Text = "Read-only. ↻ LIST enumerates every scope/key (values are never "
+                 + "cached); type to search, click one to GET its value. Uses the "
+                 + "Databricks token in .env.",
+            AutoSize = false, Location = new Point(24, 448), Size = new Size(552, 96),
+            ForeColor = ColorTranslator.FromHtml("#64748B"),
+            Font = new Font("Segoe UI", 9F), BackColor = Color.Transparent };
+
+        Controls.Add(header);
+        Controls.Add(divider);
+        Controls.Add(hostLabel);
+        Controls.Add(hostVal);
+        Controls.Add(nameLabel);
+        Controls.Add(nameBox);
+        Controls.Add(listBtn);
+        Controls.Add(getBtn);
+        Controls.Add(countLabel);
+        Controls.Add(secretList);
+        Controls.Add(valueLabel);
+        Controls.Add(valueBox);
+        Controls.Add(revealBtn);
+        Controls.Add(copyBtn);
+        Controls.Add(nameCopyBtn);
+        Controls.Add(status);
+        ActiveControl = nameBox;
+
+        if (Host.Length == 0 || Token.Length == 0)
+        {
+            SetStatus("✗ Set DATABRICKS_HOST and DATABRICKS_TOKEN in .env next to the "
+                + "exe, then reopen this window.", ColorTranslator.FromHtml("#F87171"));
+            listBtn.Enabled = false; getBtn.Enabled = false;
+            return;
+        }
+
+        // Load cached scope/key list; if empty, enumerate once from the workspace.
+        secrets = LoadCache();
+        if (secrets.Count > 0)
+        {
+            FilterSecrets();
+            SetStatus("Loaded " + secrets.Count + " scope/key entries from cache. "
+                + "Type to search, click one to GET — ↻ LIST to refresh.",
+                ColorTranslator.FromHtml("#38BDF8"));
+        }
+        else
+        {
+            RefreshSecrets();
+        }
+    }
+
+    // Load the cached scope\tkey lines (names only, never values).
+    static List<DbxSecret> LoadCache()
+    {
+        var list = new List<DbxSecret>();
+        try
+        {
+            if (!File.Exists(CacheFile())) return list;
+            foreach (string raw in File.ReadAllLines(CacheFile()))
+            {
+                string line = raw.Trim();
+                if (line.Length == 0) continue;
+                int tab = line.IndexOf('\t');
+                if (tab <= 0) continue;
+                list.Add(new DbxSecret {
+                    Scope = line.Substring(0, tab), Key = line.Substring(tab + 1) });
+            }
+        }
+        catch { }
+        return list
+            .OrderBy(x => x.Scope, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    // Rebuild the ListBox from `secrets`, keeping entries whose scope OR key
+    // contains the query (case-insensitive substring). Updates the count label.
+    void FilterSecrets()
+    {
+        if (secretList == null) return;
+        string q = (nameBox.Text ?? "").Trim();
+        var matches = (q.Length == 0
+            ? secrets
+            : secrets.Where(x =>
+                x.Scope.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                x.Key.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0))
+            .ToList();
+
+        secretList.BeginUpdate();
+        secretList.Items.Clear();
+        foreach (var x in matches) secretList.Items.Add(x);
+        secretList.EndUpdate();
+
+        if (secrets.Count == 0) countLabel.Text = "";
+        else if (q.Length == 0) countLabel.Text = secrets.Count + " secrets";
+        else countLabel.Text = matches.Count + " of " + secrets.Count + " secrets";
+    }
+
+    void PickAndGet(DbxSecret sec)
+    {
+        if (sec == null) return;
+        // Reflect the pick in the list selection without refiltering it away.
+        int idx = secretList.Items.IndexOf(sec);
+        if (idx >= 0) secretList.SelectedIndex = idx;
+        DoGet(sec);
+    }
+
+    // ---- enumerate every scope/key on a background thread ----
+
+    void RefreshSecrets()
+    {
+        listBtn.Enabled = false; getBtn.Enabled = false;
+        listBtn.Text = "…";
+        SetStatus("Enumerating secret scopes in the workspace…",
+            ColorTranslator.FromHtml("#38BDF8"));
+        Audit("LIST");
+
+        var t = new System.Threading.Thread(() =>
+        {
+            var found = new List<DbxSecret>();
+            var noAccess = new List<string>();
+            int scopeCount = 0;
+            string fatal = null;
+
+            try
+            {
+                int st; string err;
+                string body = HttpGet(Host + "/api/2.0/secrets/scopes/list", out st, out err);
+                if (body == null) { fatal = err; }
+                else
+                {
+                    var scopes = ParseScopes(body);
+                    scopeCount = scopes.Count;
+                    if (scopeCount == 0 && st >= 400)
+                        fatal = ErrorText(body, st);
+                    else
+                    {
+                        int n = 0;
+                        foreach (var sc in scopes)
+                        {
+                            n++;
+                            try { BeginInvoke((Action)(() => SetStatus(
+                                "Listing keys… scope " + n + " of " + scopeCount
+                                + "  (" + sc.Name + ")", ColorTranslator.FromHtml("#38BDF8")))); }
+                            catch { }
+
+                            int st2; string err2;
+                            string b2 = HttpGet(Host + "/api/2.0/secrets/list?scope="
+                                + Uri.EscapeDataString(sc.Name), out st2, out err2);
+                            if (b2 == null) { noAccess.Add(sc.Name); continue; }
+                            if (st2 >= 400) { noAccess.Add(sc.Name); continue; }
+                            foreach (string key in ParseKeys(b2))
+                                found.Add(new DbxSecret { Scope = sc.Name, Key = key });
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) { fatal = ex.Message; }
+
+            try { BeginInvoke((Action)(() =>
+                ListDone(found, scopeCount, noAccess, fatal))); }
+            catch { }
+        }) { IsBackground = true };
+        t.Start();
+    }
+
+    void ListDone(List<DbxSecret> found, int scopeCount, List<string> noAccess, string fatal)
+    {
+        listBtn.Enabled = true; getBtn.Enabled = true;
+        listBtn.Text = "↻  LIST";
+
+        if (fatal != null)
+        {
+            SetStatus("✗ " + fatal, ColorTranslator.FromHtml("#F87171"));
+            return;
+        }
+
+        secrets = found
+            .OrderBy(x => x.Scope, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        try
+        {
+            File.WriteAllLines(CacheFile(),
+                secrets.Select(x => x.Scope + "\t" + x.Key).ToArray());
+        }
+        catch { }
+        FilterSecrets();
+
+        string msg = "✓ " + secrets.Count + " keys across " + scopeCount + " scopes.";
+        if (noAccess.Count > 0)
+            msg += "  " + noAccess.Count + " scope(s) not readable by this token: "
+                 + string.Join(", ", noAccess.Take(6).ToArray())
+                 + (noAccess.Count > 6 ? " …" : "");
+        SetStatus(msg, ColorTranslator.FromHtml("#34D399"));
+    }
+
+    // ---- GET one secret value on a background thread ----
+
+    void DoGet(DbxSecret sec)
+    {
+        currentValue = null;
+        valueBox.Text = "";
+        revealed = false;
+        valueBox.UseSystemPasswordChar = true;
+        revealBtn.Text = "👁";
+        getBtn.Enabled = false; listBtn.Enabled = false;
+        getBtn.Text = "…";
+        SetStatus("Fetching " + sec.Scope + "/" + sec.Key + " …",
+            ColorTranslator.FromHtml("#38BDF8"));
+        Audit("GET " + sec.Scope + "/" + sec.Key);
+
+        var t = new System.Threading.Thread(() =>
+        {
+            string val = null, err = null;
+            try
+            {
+                int st; string herr;
+                string body = HttpGet(Host + "/api/2.0/secrets/get?scope="
+                    + Uri.EscapeDataString(sec.Scope) + "&key="
+                    + Uri.EscapeDataString(sec.Key), out st, out herr);
+                if (body == null) err = herr;
+                else if (st >= 400) err = ErrorText(body, st);
+                else
+                {
+                    string b64 = ParseValue(body);
+                    if (b64 == null) err = "No value in response.";
+                    else val = DecodeValue(b64);
+                }
+            }
+            catch (Exception ex) { err = ex.Message; }
+
+            try { BeginInvoke((Action)(() => GetDone(sec, val, err))); }
+            catch { }
+        }) { IsBackground = true };
+        t.Start();
+    }
+
+    void GetDone(DbxSecret sec, string val, string err)
+    {
+        getBtn.Enabled = true; listBtn.Enabled = true;
+        getBtn.Text = "▶  GET";
+
+        if (err != null)
+        {
+            SetStatus("✗ " + err, ColorTranslator.FromHtml("#F87171"));
+            return;
+        }
+        currentValue = val;
+        valueBox.Text = val;   // stays masked until 👁
+        SetStatus("✓ Retrieved \"" + sec.Scope + "/" + sec.Key + "\".  Hidden — click "
+            + "👁 to reveal, ⧉ COPY VALUE to copy.", ColorTranslator.FromHtml("#34D399"));
+    }
+
+    // ---- HTTP + JSON helpers ----
+
+    // GET with Bearer auth. Returns the response body (even for 4xx/5xx, so the
+    // caller can parse the Databricks error JSON) and the status code; returns
+    // null only on a transport-level failure, with the reason in `err`.
+    static string HttpGet(string url, out int status, out string err)
+    {
+        status = -1; err = "";
+        try { ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12; } catch { }
+        try
+        {
+            var req = (HttpWebRequest)WebRequest.Create(url);
+            req.Method = "GET";
+            req.Headers["Authorization"] = "Bearer " + Token;
+            req.Accept = "application/json";
+            req.Timeout = 60000;
+            req.ReadWriteTimeout = 60000;
+            using (var resp = (HttpWebResponse)req.GetResponse())
+            using (var sr = new StreamReader(resp.GetResponseStream()))
+            {
+                status = (int)resp.StatusCode;
+                return sr.ReadToEnd();
+            }
+        }
+        catch (WebException wex)
+        {
+            var hr = wex.Response as HttpWebResponse;
+            if (hr != null)
+            {
+                status = (int)hr.StatusCode;
+                try { using (var sr = new StreamReader(hr.GetResponseStream())) return sr.ReadToEnd(); }
+                catch { }
+            }
+            err = wex.Message;
+            return null;
+        }
+        catch (Exception ex) { err = ex.Message; return null; }
+    }
+
+    class DbxScope { public string Name = "", Backend = ""; }
+
+    static List<DbxScope> ParseScopes(string body)
+    {
+        var list = new List<DbxScope>();
+        try
+        {
+            var root = Json.Deserialize<Dictionary<string, object>>(body);
+            object arr;
+            if (root != null && root.TryGetValue("scopes", out arr) && arr is object[])
+                foreach (object o in (object[])arr)
+                {
+                    var d = o as Dictionary<string, object>;
+                    if (d == null) continue;
+                    string name = d.ContainsKey("name") ? Convert.ToString(d["name"]) : null;
+                    if (string.IsNullOrEmpty(name)) continue;
+                    list.Add(new DbxScope {
+                        Name = name,
+                        Backend = d.ContainsKey("backend_type") ? Convert.ToString(d["backend_type"]) : "" });
+                }
+        }
+        catch { }
+        return list;
+    }
+
+    static List<string> ParseKeys(string body)
+    {
+        var list = new List<string>();
+        try
+        {
+            var root = Json.Deserialize<Dictionary<string, object>>(body);
+            object arr;
+            if (root != null && root.TryGetValue("secrets", out arr) && arr is object[])
+                foreach (object o in (object[])arr)
+                {
+                    var d = o as Dictionary<string, object>;
+                    if (d == null) continue;
+                    string key = d.ContainsKey("key") ? Convert.ToString(d["key"]) : null;
+                    if (!string.IsNullOrEmpty(key)) list.Add(key);
+                }
+        }
+        catch { }
+        return list;
+    }
+
+    static string ParseValue(string body)
+    {
+        try
+        {
+            var root = Json.Deserialize<Dictionary<string, object>>(body);
+            object v;
+            if (root != null && root.TryGetValue("value", out v)) return Convert.ToString(v);
+        }
+        catch { }
+        return null;
+    }
+
+    // Pull a readable message out of a Databricks error body, else fall back to
+    // the HTTP status.
+    static string ErrorText(string body, int status)
+    {
+        try
+        {
+            var root = Json.Deserialize<Dictionary<string, object>>(body);
+            string code = root != null && root.ContainsKey("error_code")
+                ? Convert.ToString(root["error_code"]) : "";
+            string msg = root != null && root.ContainsKey("message")
+                ? Convert.ToString(root["message"]) : "";
+            if (msg.Length > 0)
+                return (code.Length > 0 ? code + ": " : "") + msg;
+            if (code.Length > 0) return code;
+        }
+        catch { }
+        return "HTTP " + status;
+    }
+
+    // Databricks returns secret values base64-encoded; decode to text.
+    static string DecodeValue(string b64)
+    {
+        try { return Encoding.UTF8.GetString(Convert.FromBase64String(b64)); }
+        catch { return b64; }   // not valid base64 (shouldn't happen) — show as-is
+    }
+
+    static Button FlatButton(string text, Color back, Point at, Size size)
+    {
+        var b = new Button {
+            Text = text, Location = at, Size = size,
+            ForeColor = Color.White, BackColor = back,
+            FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand,
+            Font = new Font("Segoe UI Semibold", 9.5F) };
+        b.FlatAppearance.BorderSize = 0;
+        b.FlatAppearance.MouseOverBackColor = ControlPaint.Light(back, 0.25f);
+        return b;
+    }
+
+    void SetStatus(string text, Color color)
+    {
+        status.ForeColor = color;
+        status.Text = text;
     }
 }
 

@@ -3178,8 +3178,10 @@ class DatabricksSecretsForm : Form
         {
             var root = Json.Deserialize<Dictionary<string, object>>(body);
             object arr;
-            if (root != null && root.TryGetValue("scopes", out arr) && arr is object[])
-                foreach (object o in (object[])arr)
+            // JavaScriptSerializer deserializes JSON arrays as ArrayList (not object[]),
+            // so iterate as IEnumerable to be safe either way.
+            if (root != null && root.TryGetValue("scopes", out arr) && arr is System.Collections.IEnumerable)
+                foreach (object o in (System.Collections.IEnumerable)arr)
                 {
                     var d = o as Dictionary<string, object>;
                     if (d == null) continue;
@@ -3201,8 +3203,9 @@ class DatabricksSecretsForm : Form
         {
             var root = Json.Deserialize<Dictionary<string, object>>(body);
             object arr;
-            if (root != null && root.TryGetValue("secrets", out arr) && arr is object[])
-                foreach (object o in (object[])arr)
+            // JSON arrays come back as ArrayList — iterate as IEnumerable.
+            if (root != null && root.TryGetValue("secrets", out arr) && arr is System.Collections.IEnumerable)
+                foreach (object o in (System.Collections.IEnumerable)arr)
                 {
                     var d = o as Dictionary<string, object>;
                     if (d == null) continue;

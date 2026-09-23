@@ -49,7 +49,7 @@ command changed to `codex --dangerously-bypass-approvals-and-sandbox
 ## Launch dialog (the ✎ button)
 The ✎ button on tiles/pills opens a launch dialog with these fields:
 - **Provider dropdown** - Claude by default, or Codex.
-- **Model dropdown** — Default / Opus 5 / Opus 4.8 / Fable 5.1 / Fable 5 / Sonnet 5 / Haiku 4.5.
+- **Model dropdown** — Default / Opus 5.5 / Opus 5 / Opus 4.8 / Fable 5.1 / Fable 5 / Sonnet 5 / Haiku 4.5.
   Non-default picks add `--model <id>` to the claude command (ids in the
   `ClaudeModelIds` array in `DevLauncher.cs` — update there when models change).
   When Codex is selected, the dropdown switches to Astra / 5.6 Sol / 5.6 Terra /

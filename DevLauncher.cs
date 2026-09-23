@@ -1194,9 +1194,9 @@ class LauncherForm : Form
     // Claude model choices offered in the launch dialog. Labels are what's shown;
     // ids are passed to `claude --model`. Empty id = no flag (CLI default).
     static readonly string[] ClaudeModelLabels = {
-        "Default model", "Opus 5", "Opus 4.8", "Fable 5.1", "Fable 5", "Sonnet 5", "Haiku 4.5" };
+        "Default model", "Opus 5.5", "Opus 5", "Opus 4.8", "Fable 5.1", "Fable 5", "Sonnet 5", "Haiku 4.5" };
     static readonly string[] ClaudeModelIds = {
-        "", "claude-opus-5", "claude-opus-4-8", "claude-fable-5-1", "claude-fable-5", "claude-sonnet-5", "claude-haiku-4-5" };
+        "", "claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-fable-5-1", "claude-fable-5", "claude-sonnet-5", "claude-haiku-4-5" };
 
     // Codex model choices verified against Codex CLI 0.153.2 (`codex debug models`)
     // and current OpenAI Codex docs. ids are passed to `codex -m`.

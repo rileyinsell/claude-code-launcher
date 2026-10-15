@@ -71,6 +71,9 @@ The ✎ button on tiles/pills opens a launch dialog with these fields:
 - **Handoff (checkbox, default OFF)** — prepends a "use the last available
   handoff to catch up" instruction. Sits *after* the CLAUDE.md lead-in and
   *before* the initial prompt.
+- **Approve and Deploy PR (checkbox, default OFF)** — enables a PR URL field and
+  prepends an instruction to approve that pull request, deploy it end to end,
+  and verify the deployment succeeds.
 - **Prompt (multiline)** — empty falls back to the project's default prompt,
   so the dialog can be used just to pick a model or rename the tab.
 

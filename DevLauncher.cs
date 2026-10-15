@@ -28,12 +28,15 @@ class AppEntry
 // What the launch dialog hands back. Null prompt/model/tab all have defaults.
 // LoopMinutes 0 = no loop; ReadClaudeMd prepends a "Read CLAUDE.md first." lead-in.
 // Handoff prepends a "use the last available handoff" lead-in (after CLAUDE.md).
+// ApproveDeployPr prepends instructions to approve and deploy the supplied PR URL.
 // SimpleComm prepends an "always report clearly and simply, like to an executive" rule.
 class LaunchOptions
 {
     public string Prompt = "", Provider = "Claude", Model = "", TabTitle = "";
+    public string PrUrl = "";
     public bool ReadClaudeMd;
     public bool Handoff;
+    public bool ApproveDeployPr;
     public bool SimpleComm;
     public int LoopMinutes;
 }
@@ -1175,6 +1178,12 @@ class LauncherForm : Form
             prompt = ExecCommPreamble + prompt;
         if (opts.Handoff)
             prompt = "Use the last available handoff to catch up on where things left off. " + prompt;
+        if (opts.ApproveDeployPr)
+        {
+            string target = opts.PrUrl.Length > 0 ? " at " + opts.PrUrl : "";
+            prompt = "Approve the pull request" + target
+                + " and get it deployed from end to end. Verify the deployment is successful. " + prompt;
+        }
         // Skip the CLAUDE.md prepend if the prompt already mentions CLAUDE.md (the
         // default prompts do) so it doesn't stutter.
         if (opts.ReadClaudeMd
@@ -1284,7 +1293,7 @@ class LauncherForm : Form
             dlg.Text = "Launch " + appName;
             dlg.FormBorderStyle = FormBorderStyle.FixedDialog;
             dlg.StartPosition = FormStartPosition.CenterParent;
-            dlg.ClientSize = new Size(640, 522);
+            dlg.ClientSize = new Size(640, 596);
             dlg.MaximizeBox = false; dlg.MinimizeBox = false;
             dlg.BackColor = ColorTranslator.FromHtml("#0A0F1E");
 
@@ -1364,6 +1373,27 @@ class LauncherForm : Form
                 ForeColor = fieldFore, BackColor = Color.Transparent,
                 Font = new Font("Segoe UI", 9.5F), Cursor = Cursors.Hand };
 
+            var approveDeployCheck = new CheckBox {
+                Text = "Approve and Deploy PR", AutoSize = true, Checked = false,
+                Location = new Point(452, 202),
+                ForeColor = fieldFore, BackColor = Color.Transparent,
+                Font = new Font("Segoe UI", 9.5F), Cursor = Cursors.Hand };
+
+            var prUrlLabel = SectionLabel("PR URL", 24, 202);
+            var prUrlBox = new TextBox {
+                Location = new Point(24, 222), Size = new Size(592, 28),
+                Enabled = false,
+                BackColor = fieldBack, ForeColor = fieldFore,
+                BorderStyle = BorderStyle.FixedSingle,
+                Font = new Font("Segoe UI", 10.5F) };
+            prUrlBox.HandleCreated += (s, e) =>
+                SendMessage(prUrlBox.Handle, EM_SETCUEBANNER, (IntPtr)1,
+                    "https://github.com/owner/repo/pull/123");
+            approveDeployCheck.CheckedChanged += (s, e) => {
+                prUrlBox.Enabled = approveDeployCheck.Checked;
+                if (approveDeployCheck.Checked) prUrlBox.Focus();
+            };
+
             Action refreshModels = () => {
                 bool codex = providerBox.SelectedItem != null
                     && providerBox.SelectedItem.ToString() == "Codex";
@@ -1379,9 +1409,9 @@ class LauncherForm : Form
             providerBox.SelectedIndexChanged += (s, e) => refreshModels();
             refreshModels();
 
-            var promptLabel = SectionLabel("INITIAL PROMPT", 24, 194);
+            var promptLabel = SectionLabel("INITIAL PROMPT", 24, 266);
             var box = new TextBox {
-                Location = new Point(24, 214), Size = new Size(592, 230),
+                Location = new Point(24, 286), Size = new Size(592, 230),
                 Multiline = true, AcceptsReturn = true, WordWrap = true,
                 ScrollBars = ScrollBars.Vertical,
                 // 0 = no length cap (a multiline TextBox otherwise defaults to 32767
@@ -1396,14 +1426,14 @@ class LauncherForm : Form
                 Text = "Leave the prompt empty to launch with this project's default prompt.",
                 ForeColor = ColorTranslator.FromHtml("#64748B"),
                 Font = new Font("Segoe UI", 8.5F), AutoSize = true,
-                Location = new Point(24, 452), BackColor = Color.Transparent };
+                Location = new Point(24, 524), BackColor = Color.Transparent };
 
             var start = MakeDialogButton("▶  START", ColorTranslator.FromHtml("#0891B2"),
                 DialogResult.OK);
-            start.Location = new Point(386, 474); start.Size = new Size(128, 36);
+            start.Location = new Point(386, 546); start.Size = new Size(128, 36);
             var cancel = MakeDialogButton("CANCEL", ColorTranslator.FromHtml("#1E293B"),
                 DialogResult.Cancel);
-            cancel.Location = new Point(524, 474); cancel.Size = new Size(92, 36);
+            cancel.Location = new Point(524, 546); cancel.Size = new Size(92, 36);
 
             dlg.Controls.Add(header);
             dlg.Controls.Add(divider);
@@ -1419,6 +1449,9 @@ class LauncherForm : Form
             dlg.Controls.Add(claudeMdCheck);
             dlg.Controls.Add(simpleCheck);
             dlg.Controls.Add(handoffCheck);
+            dlg.Controls.Add(approveDeployCheck);
+            dlg.Controls.Add(prUrlLabel);
+            dlg.Controls.Add(prUrlBox);
             dlg.Controls.Add(promptLabel);
             dlg.Controls.Add(box);
             dlg.Controls.Add(hint);
@@ -1438,8 +1471,10 @@ class LauncherForm : Form
                     ? CodexModelIds[modelBox.SelectedIndex]
                     : ClaudeModelIds[modelBox.SelectedIndex],
                 TabTitle = tabBox.Text.Trim(),
+                PrUrl = prUrlBox.Text.Trim(),
                 ReadClaudeMd = claudeMdCheck.Checked,
                 Handoff = handoffCheck.Checked,
+                ApproveDeployPr = approveDeployCheck.Checked,
                 SimpleComm = simpleCheck.Checked,
                 LoopMinutes = !pickedCodex && loopCheck.Checked ? (int)loopBox.Value : 0 };
         }

@@ -1380,9 +1380,10 @@ class LauncherForm : Form
                 Font = new Font("Segoe UI", 9.5F), Cursor = Cursors.Hand };
 
             var prUrlLabel = SectionLabel("PR URL", 24, 202);
+            prUrlLabel.Visible = false;
             var prUrlBox = new TextBox {
                 Location = new Point(24, 222), Size = new Size(592, 28),
-                Enabled = false,
+                Visible = false,
                 BackColor = fieldBack, ForeColor = fieldFore,
                 BorderStyle = BorderStyle.FixedSingle,
                 Font = new Font("Segoe UI", 10.5F) };
@@ -1390,7 +1391,8 @@ class LauncherForm : Form
                 SendMessage(prUrlBox.Handle, EM_SETCUEBANNER, (IntPtr)1,
                     "https://github.com/owner/repo/pull/123");
             approveDeployCheck.CheckedChanged += (s, e) => {
-                prUrlBox.Enabled = approveDeployCheck.Checked;
+                prUrlLabel.Visible = approveDeployCheck.Checked;
+                prUrlBox.Visible = approveDeployCheck.Checked;
                 if (approveDeployCheck.Checked) prUrlBox.Focus();
             };
 

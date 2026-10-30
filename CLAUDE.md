@@ -193,6 +193,15 @@ Key Vault Secrets access (Secrets User for GET, Secrets Officer for SET).
     interpolated into the `cmd.exe` arg — so the name is injection-safe too.
 - The VALUE box is now editable; its `TextChanged` keeps `currentValue` in sync so
   ⧉ COPY always copies exactly what's shown (fetched or freshly typed).
+- **➕ ADD NEW SECRET section** (below COPY): its own NAME + VALUE boxes (value masked,
+  👁 reveals) and an **ADD** button. `DoAdd()` refuses a name already in the cached
+  list, confirms, then on a background thread: (1) `az keyvault secret show` to make
+  sure the name is really free (anything but `SecretNotFound` aborts, so ADD can
+  **never overwrite** — that's SET's job), (2) `secret set` via the same temp
+  `--file` trick (deleted in `finally`), (3) **reads the value back and compares it
+  to what was typed**. Green "Verified" only when the read-back matches; then the
+  boxes clear and the name joins the searchable list + `secrets.txt`. Shared helpers:
+  `RunAz` (sync az call with timeout) and `ValidSecretName`.
 
 ## Databricks Secrets browser (the 🧱 button)
 Databricks-red 🧱 button in the header, left of the 🧩 Logic Apps launcher. Opens

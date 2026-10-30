@@ -2213,6 +2213,8 @@ class SecretGrabberForm : Form
 
     TextBox nameBox, valueBox;
     Button getBtn, setBtn, revealBtn, copyBtn, listBtn;
+    TextBox addNameBox, addValueBox;    // ADD NEW SECRET section
+    Button addBtn, addRevealBtn;
     ListBox secretList;                 // searchable dropdown of secret names
     Label status, countLabel;
     string currentValue;   // last fetched secret, in memory only
@@ -2236,7 +2238,7 @@ class SecretGrabberForm : Form
         FormBorderStyle = FormBorderStyle.FixedDialog;
         StartPosition = FormStartPosition.CenterParent;
         MaximizeBox = false; MinimizeBox = false;
-        ClientSize = new Size(600, 560);
+        ClientSize = new Size(600, 700);
         BackColor = ColorTranslator.FromHtml("#0A0F1E");
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
@@ -2347,11 +2349,49 @@ class SecretGrabberForm : Form
             catch { }   // clipboard can be locked by another app; just skip
         };
 
+        // ADD NEW SECRET: name + value + ADD. Writes the secret, then reads it
+        // back from the vault and compares, so a green status means verified.
+        var addDivider = new Panel {
+            Location = new Point(24, 452), Size = new Size(552, 1),
+            BackColor = ColorTranslator.FromHtml("#155E75") };
+        var addHeader = new Label {
+            Text = "➕  ADD NEW SECRET",
+            ForeColor = ColorTranslator.FromHtml("#34D399"),
+            Font = new Font("Segoe UI Semibold", 10.5F),
+            AutoSize = true, Location = new Point(22, 462), BackColor = Color.Transparent };
+
+        var addNameLabel = LauncherForm.SectionLabel("NEW SECRET NAME  ·  LETTERS, DIGITS, HYPHENS", 24, 490);
+        addNameBox = new TextBox {
+            Location = new Point(24, 510), Size = new Size(552, 28),
+            BackColor = fieldBack, ForeColor = fieldFore,
+            BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 10.5F) };
+
+        var addValueLabel = LauncherForm.SectionLabel("NEW SECRET VALUE", 24, 546);
+        addValueBox = new TextBox {
+            Location = new Point(24, 566), Size = new Size(388, 28),
+            UseSystemPasswordChar = true,
+            BackColor = fieldBack, ForeColor = fieldFore,
+            BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 10.5F) };
+        addValueBox.KeyDown += (s, e) => {
+            if (e.KeyCode == Keys.Enter) { DoAdd(); e.SuppressKeyPress = true; }
+        };
+
+        addRevealBtn = FlatButton("👁", ColorTranslator.FromHtml("#1E293B"),
+            new Point(420, 565), new Size(44, 30));
+        addRevealBtn.Click += (s, e) => {
+            addValueBox.UseSystemPasswordChar = !addValueBox.UseSystemPasswordChar;
+            addRevealBtn.Text = addValueBox.UseSystemPasswordChar ? "👁" : "🙈";
+        };
+
+        addBtn = FlatButton("➕  ADD", ColorTranslator.FromHtml("#047857"),
+            new Point(476, 565), new Size(100, 30));
+        addBtn.Click += (s, e) => DoAdd();
+
         status = new Label {
             Text = "Type to search secret names, click one to GET it — or type a "
-                 + "value and SET to write it back. Needs an interactive az login "
-                 + "with Key Vault Secrets access.",
-            AutoSize = false, Location = new Point(24, 448), Size = new Size(552, 96),
+                 + "value and SET to write it back. Use ADD NEW SECRET to create one. "
+                 + "Needs an interactive az login with Key Vault Secrets access.",
+            AutoSize = false, Location = new Point(24, 608), Size = new Size(552, 80),
             ForeColor = ColorTranslator.FromHtml("#64748B"),
             Font = new Font("Segoe UI", 9F), BackColor = Color.Transparent };
 
@@ -2370,6 +2410,14 @@ class SecretGrabberForm : Form
         Controls.Add(setBtn);
         Controls.Add(revealBtn);
         Controls.Add(copyBtn);
+        Controls.Add(addDivider);
+        Controls.Add(addHeader);
+        Controls.Add(addNameLabel);
+        Controls.Add(addNameBox);
+        Controls.Add(addValueLabel);
+        Controls.Add(addValueBox);
+        Controls.Add(addRevealBtn);
+        Controls.Add(addBtn);
         Controls.Add(status);
         ActiveControl = nameBox;
 
@@ -2735,6 +2783,165 @@ class SecretGrabberForm : Form
             if (msg.Length == 0) msg = "Set failed (exit " + code + ").";
             SetStatus("✗ " + msg, ColorTranslator.FromHtml("#F87171"));
         }
+    }
+
+    // Run one cmd.exe /c az … call synchronously (call from a background thread).
+    // Returns false on timeout; otherwise fills stdout/stderr/exit code.
+    static bool RunAz(string args, int timeoutMs, out string outp, out string err, out int code)
+    {
+        outp = ""; err = ""; code = -1;
+        try
+        {
+            var psi = new ProcessStartInfo("cmd.exe", args)
+            {
+                UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardOutput = true, RedirectStandardError = true
+            };
+            using (var p = Process.Start(psi))
+            {
+                outp = p.StandardOutput.ReadToEnd();
+                err = p.StandardError.ReadToEnd();
+                if (!p.WaitForExit(timeoutMs)) { try { p.Kill(); } catch { } return false; }
+                code = p.ExitCode;
+            }
+        }
+        catch (Exception ex) { err = ex.Message; }
+        return true;
+    }
+
+    static bool ValidSecretName(string name)
+    {
+        if (name.Length == 0 || name.Length > 127) return false;
+        foreach (char c in name)
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z')
+                || (c >= 'A' && c <= 'Z') || c == '-'))
+                return false;
+        return true;
+    }
+
+    // ADD NEW SECRET: create a secret from the ADD section's name + value, then
+    // read it back from the vault and compare to what was typed (the "verify").
+    // Refuses to touch a name that already exists — changing an existing secret
+    // is what SET above is for — so ADD can never silently overwrite.
+    void DoAdd()
+    {
+        string name = (addNameBox.Text ?? "").Trim();
+        string value = addValueBox.Text ?? "";
+        if (name.Length == 0)
+        {
+            SetStatus("ADD: enter a name for the new secret.", ColorTranslator.FromHtml("#F87171"));
+            return;
+        }
+        // Same [0-9a-zA-Z-] rule as GET/SET — keeps the name safe to pass through cmd.exe.
+        if (!ValidSecretName(name))
+        {
+            SetStatus("ADD: invalid name. Key Vault secret names may only contain "
+                + "letters, digits, and hyphens (max 127).", ColorTranslator.FromHtml("#F87171"));
+            return;
+        }
+        if (value.Length == 0)
+        {
+            SetStatus("ADD: enter the secret value.", ColorTranslator.FromHtml("#F87171"));
+            return;
+        }
+        if (secretNames.Any(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase)))
+        {
+            SetStatus("ADD: \"" + name + "\" already exists in " + VaultName
+                + ". Use SET above to change an existing secret.", ColorTranslator.FromHtml("#F87171"));
+            return;
+        }
+
+        if (MessageBox.Show(
+                "Add new secret \"" + name + "\" to vault " + VaultName + "?",
+                "Confirm ADD", MessageBoxButtons.OKCancel, MessageBoxIcon.Question)
+            != DialogResult.OK)
+            return;
+
+        addBtn.Enabled = false; addBtn.Text = "…";
+        SetStatus("Adding " + name + " to " + VaultName + " …",
+            ColorTranslator.FromHtml("#38BDF8"));
+
+        var t = new System.Threading.Thread(() =>
+        {
+            string outp, err, result;
+            int code;
+            bool ok = false;
+
+            // 1. The cached name list can be stale, so ask the vault directly
+            //    whether the name is taken before writing anything.
+            if (!RunAz("/c az keyvault secret show --vault-name " + VaultName
+                    + " --name " + name + " --query id -o tsv", 60000, out outp, out err, out code))
+                result = "Timed out after 60s checking the vault. Is az installed and logged in?";
+            else if (code == 0)
+                result = "\"" + name + "\" already exists in " + VaultName
+                       + ". Use SET above to change an existing secret.";
+            else if ((err ?? "").IndexOf("SecretNotFound", StringComparison.OrdinalIgnoreCase) < 0)
+                result = "Couldn't check the vault: " + (err ?? "").Trim();
+            else
+            {
+                // 2. Write it. Value goes via a temp --file (never the command line)
+                //    and the file is deleted straight after.
+                string tmp = Path.Combine(Path.GetTempPath(),
+                    "devlauncher-secret-" + Guid.NewGuid().ToString("N") + ".txt");
+                bool wrote;
+                try
+                {
+                    File.WriteAllText(tmp, value, new UTF8Encoding(false));
+                    wrote = RunAz("/c az keyvault secret set --vault-name " + VaultName
+                        + " --name " + name + " --file \"" + tmp
+                        + "\" --encoding utf-8 --query id -o tsv", 60000, out outp, out err, out code);
+                }
+                catch (Exception ex) { wrote = true; code = -1; err = ex.Message; }
+                finally { try { File.Delete(tmp); } catch { } }   // never leave the secret on disk
+
+                if (!wrote)
+                    result = "Timed out after 60s adding the secret. Check the vault before retrying.";
+                else if (code != 0)
+                    result = "Add failed: " + ((err ?? "").Trim().Length > 0
+                        ? (err ?? "").Trim() : "exit " + code);
+                // 3. Verify: read it back and compare to exactly what was typed.
+                else if (!RunAz("/c az keyvault secret show --vault-name " + VaultName
+                        + " --name " + name + " --query value -o tsv", 60000, out outp, out err, out code))
+                    result = "Added, but timed out verifying. GET it to confirm.";
+                else if (code != 0)
+                    result = "Added, but couldn't read it back to verify: " + (err ?? "").Trim();
+                else if ((outp ?? "").TrimEnd('\r', '\n') != value)
+                    result = "Added, but the value read back does NOT match what you typed. "
+                           + "GET it and check before using it.";
+                else
+                {
+                    ok = true;
+                    result = "Verified: \"" + name + "\" was added to " + VaultName
+                           + " and the vault returns exactly the value you entered.";
+                }
+            }
+
+            try { BeginInvoke((Action)(() => AddDone(name, ok, result))); }
+            catch { }   // form closed before the call returned
+        }) { IsBackground = true };
+        t.Start();
+    }
+
+    void AddDone(string name, bool ok, string result)
+    {
+        addBtn.Enabled = true; addBtn.Text = "➕  ADD";
+        if (!ok)
+        {
+            SetStatus("✗ " + result, ColorTranslator.FromHtml("#F87171"));
+            return;
+        }
+
+        // Clear the form and add the name to the searchable list + cache.
+        addNameBox.Text = ""; addValueBox.Text = "";
+        addValueBox.UseSystemPasswordChar = true; addRevealBtn.Text = "👁";
+        if (!secretNames.Any(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase)))
+        {
+            secretNames.Add(name);
+            secretNames = secretNames.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
+            try { File.WriteAllLines(SecretsCacheFile(), secretNames.ToArray()); } catch { }
+            FilterSecrets();
+        }
+        SetStatus("✓ " + result, ColorTranslator.FromHtml("#34D399"));
     }
 }
 

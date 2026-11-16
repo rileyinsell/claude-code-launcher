@@ -31,3 +31,21 @@ Nothing.
 ## Suggested next prompt
 "In the Logic Apps launcher, make a failed git pull during REPULL impossible to miss
 (highlight the status in amber and show the reason)."
+
+## Follow-up (same day): prevention
+Riley asked how to make sure this never happens again. Changes in `DevLauncher.cs`
+(exe rebuilt), documented in CLAUDE.md under the Logic Apps launcher:
+1. Opening the 🧩 window now checks GitHub in the background; if the repo is behind, it
+   pulls automatically. Otherwise it rescans the local folder so the list is never stale.
+2. REPULL now self-heals the exact failure from this morning: blocking local files that
+   are identical to GitHub's copies are removed and the pull retried. Files that differ
+   are never touched; the warning names them.
+3. Any pull problem now shows first, in amber, on a 3-line status (was 1 line, cut off).
+4. After a pull it confirms the repo is level with GitHub.
+
+Tested with a reflection harness against throwaway repos (identical duplicate -> healed;
+different duplicate -> kept + amber; up to date -> green; offline -> amber) and once
+against the real repo + Azure: it found the repo 3 commits behind again, auto-pulled,
+308 Standard + 454 Consumption, Servbank_Take_To_New_Lead listed, green.
+
+Suggested next prompt: none needed. If a warning ever shows amber, follow its text.

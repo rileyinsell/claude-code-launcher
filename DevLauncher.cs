@@ -3554,13 +3554,15 @@ class LogicAppsForm : Form
     // merged and sorted by name for display.
     List<LaItem> items = new List<LaItem>();
 
-    // Set by GitPull() when a repo pull was skipped/failed; appended to the final
-    // REPULL status so a stale Standard list is never silent. Empty = pull was fine.
+    // Set by GitPull() when the repo could not be brought up to date with GitHub.
+    // Shown FIRST in the final REPULL status, in amber, so a stale Standard list is
+    // never silent. Empty = the repo is level with GitHub.
     string gitPullNote = "";
 
     static readonly Color Red      = ColorTranslator.FromHtml("#F87171");
     static readonly Color Green    = ColorTranslator.FromHtml("#34D399");
     static readonly Color Cyan     = ColorTranslator.FromHtml("#38BDF8");
+    static readonly Color Amber    = ColorTranslator.FromHtml("#FBBF24");
     static readonly Color StdText  = ColorTranslator.FromHtml("#67E8F9");   // Standard
     static readonly Color ConsText = ColorTranslator.FromHtml("#FBBF24");   // Consumption
     static readonly Color BadgeDim = ColorTranslator.FromHtml("#475569");
@@ -3638,7 +3640,7 @@ class LogicAppsForm : Form
 
         list = new ListBox {
             Location = new Point(24, 150),
-            Size = new Size(right - 24, ClientSize.Height - 150 - 44),
+            Size = new Size(right - 24, ClientSize.Height - 150 - 68),
             Anchor = AnchorStyles.Top | AnchorStyles.Bottom
                    | AnchorStyles.Left | AnchorStyles.Right,
             DrawMode = DrawMode.OwnerDrawFixed, ItemHeight = 26,
@@ -3659,8 +3661,8 @@ class LogicAppsForm : Form
         };
 
         status = new Label {
-            AutoSize = false, Location = new Point(24, ClientSize.Height - 34),
-            Size = new Size(right - 24, 24),
+            AutoSize = false, Location = new Point(24, ClientSize.Height - 60),
+            Size = new Size(right - 24, 50),
             Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
             ForeColor = ColorTranslator.FromHtml("#64748B"),
             Font = new Font("Segoe UI", 9F), BackColor = Color.Transparent };
@@ -3686,8 +3688,84 @@ class LogicAppsForm : Form
         {
             ApplyFilter();
             SetStatus("Loaded " + Describe() + " from cache. "
-                + "Click a name to open it — ↻ REPULL to refresh.", Cyan);
+                + "Checking GitHub for new workflows…", Cyan);
+            CheckFreshOnOpen();
         }
+    }
+
+    // On open, quietly ask GitHub whether the local repo is behind. If it is, run a
+    // full REPULL automatically so a new workflow shows up without anyone having to
+    // remember to click ↻. Background thread; failures just leave the cached list.
+    void CheckFreshOnOpen()
+    {
+        if (repoPath.Length == 0 || !Directory.Exists(repoPath)) return;
+        var t = new System.Threading.Thread(() =>
+        {
+            int behind = -1;
+            try
+            {
+                string o, e;
+                if (RunGit("fetch --quiet", 30000, out o, out e) == 0) behind = BehindCount();
+            }
+            catch { }
+            try { BeginInvoke((Action)(() =>
+            {
+                if (IsDisposed || !repullBtn.Enabled) return;
+                if (behind > 0)
+                {
+                    SetStatus("Repo is " + behind + " update(s) behind GitHub - pulling…", Cyan);
+                    Repull();
+                    return;
+                }
+                // Not pulling: still rescan the folder (instant, offline) so a repo that
+                // was updated outside the launcher can't hide behind a stale cache.
+                RescanStandardFromDisk();
+                if (behind == 0)
+                    SetStatus("Loaded " + Describe() + " - repo is up to date with GitHub. "
+                        + "Click a name to open it.", Green);
+                else
+                    SetStatus("Loaded " + Describe() + " from cache. Couldn't reach GitHub "
+                        + "to check for new workflows - ↻ REPULL to retry.", Amber);
+            })); }
+            catch { }
+        }) { IsBackground = true };
+        t.Start();
+    }
+
+    // Re-read the Standard workflow folders from disk, rewrite that cache, and merge
+    // with the cached Consumption entries. No network; silent on failure.
+    void RescanStandardFromDisk()
+    {
+        try
+        {
+            var found = Directory.GetDirectories(repoPath)
+                .Select(d => Path.GetFileName(d))
+                .Where(n => n.Length > 0 && n[0] != '.')
+                .Select(n => new LaItem { Name = n, Consumption = false })
+                .ToList();
+            try { File.WriteAllLines(CacheFile(), found.Select(i => i.Name).ToArray()); } catch { }
+            items = Sort(found.Concat(items.Where(i => i.Consumption)).ToList());
+            ApplyFilter();
+        }
+        catch { }
+    }
+
+    // How many commits the local branch is behind its GitHub branch (after a fetch).
+    // -1 if it can't be determined (no upstream, git error).
+    int BehindCount()
+    {
+        string o, e;
+        if (RunGit("rev-list --count HEAD..@{u}", 15000, out o, out e) != 0) return -1;
+        int n;
+        return int.TryParse((o ?? "").Trim(), out n) ? n : -1;
+    }
+
+    // Final REPULL status: a pull problem goes FIRST and turns a green status amber,
+    // so it can't hide at the end of a long line.
+    void FinalStatus(string text, Color color)
+    {
+        if (gitPullNote.Length == 0) { SetStatus(text, color); return; }
+        SetStatus(gitPullNote + "   " + text, color == Green ? Amber : color);
     }
 
     // "N logic apps (X standard · Y consumption)" for status/count text.
@@ -3764,25 +3842,108 @@ class LogicAppsForm : Form
     // rewrites history, and --autostash sets aside any uncommitted work before the
     // pull and restores it after — so a pull can NEVER wipe local changes. If it
     // can't fast-forward (diverged commits) it fails without changing anything.
-    // Best-effort: on any failure we note it and still scan whatever is on disk.
+    //
+    // Self-heal (2026-11-16): git refuses to pull when an UNTRACKED local file has
+    // the same name as a file the update adds ("untracked working tree files would
+    // be overwritten"). That silently froze the repo 120 commits behind. Now, if
+    // every blocking file is byte-identical to GitHub's copy (git blob hash match),
+    // we delete the local duplicates and retry — nothing is lost because GitHub has
+    // the exact same bytes. Any file that DIFFERS is left alone and named in the
+    // warning. Finally we verify the repo is level with GitHub; if not, the reason
+    // goes in gitPullNote (shown first, amber).
     void GitPull()
     {
         try
         {
             string outp, err;
             int code = RunGit("pull --ff-only --autostash", 60000, out outp, out err);
-            if (code == 0) return;   // pulled or already up to date
-            string m = (err ?? "").Trim();
-            if (m.Length == 0) m = (outp ?? "").Trim();
-            m = m.Split('\n')[0].Trim();
-            if (m.Length > 120) m = m.Substring(0, 120) + "…";
-            gitPullNote = "  (git pull skipped: " + (m.Length == 0 ? "code " + code : m) + ")";
+            if (code != 0)
+            {
+                string all = (err ?? "") + "\n" + (outp ?? "");
+                if (all.IndexOf("untracked working tree files would be overwritten",
+                        StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    string why = ClearIdenticalUntracked(all);
+                    if (why.Length > 0) { gitPullNote = "⚠ Repo NOT updated: " + why; return; }
+                    code = RunGit("pull --ff-only --autostash", 60000, out outp, out err);
+                }
+                if (code != 0)
+                {
+                    string m = (err ?? "").Trim();
+                    if (m.Length == 0) m = (outp ?? "").Trim();
+                    m = m.Split('\n')[0].Trim();
+                    if (m.Length > 140) m = m.Substring(0, 140) + "…";
+                    gitPullNote = "⚠ Repo NOT updated (git pull failed: "
+                        + (m.Length == 0 ? "code " + code : m) + ").";
+                    int b = BehindCount();
+                    if (b > 0) gitPullNote += " It is " + b + " update(s) behind GitHub, "
+                        + "so new workflows may be missing.";
+                    return;
+                }
+            }
+            int behind = BehindCount();
+            if (behind > 0)
+                gitPullNote = "⚠ Repo is still " + behind + " update(s) behind GitHub "
+                    + "after pulling - new workflows may be missing.";
         }
-        catch (Exception ex) { gitPullNote = "  (git pull skipped: " + ex.Message + ")"; }
+        catch (Exception ex) { gitPullNote = "⚠ Repo NOT updated (git pull: " + ex.Message + ")."; }
+    }
+
+    // Parse the blocking file list out of git's "untracked working tree files would be
+    // overwritten" error and delete each one ONLY if it is identical to the incoming
+    // copy on the upstream branch. Returns "" when all were cleared (safe to retry),
+    // else a plain-English reason naming the files that differ (nothing deleted then).
+    string ClearIdenticalUntracked(string gitMsg)
+    {
+        string o, e;
+        if (RunGit("rev-parse --show-toplevel", 15000, out o, out e) != 0)
+            return "couldn't find the repo root.";
+        string top = o.Trim().Replace('/', Path.DirectorySeparatorChar);
+
+        var paths = new List<string>();
+        bool inList = false;
+        foreach (var raw in gitMsg.Split('\n'))
+        {
+            string line = raw.TrimEnd('\r');
+            if (line.IndexOf("would be overwritten", StringComparison.OrdinalIgnoreCase) >= 0)
+            { inList = true; continue; }
+            if (!inList) continue;
+            if (line.Length == 0 || !char.IsWhiteSpace(line[0])) { inList = false; continue; }
+            string pth = line.Trim();
+            if (pth.Length > 0) paths.Add(pth);
+        }
+        if (paths.Count == 0) return "local files block the update (couldn't read which).";
+
+        var differ = new List<string>();
+        foreach (var pth in paths)
+        {
+            string full = Path.Combine(top, pth.Replace('/', Path.DirectorySeparatorChar));
+            string localHash = "", remoteHash = "";
+            if (File.Exists(full) &&
+                RunGit("hash-object -- \"" + full + "\"", 15000, out o, out e) == 0)
+                localHash = o.Trim();
+            if (RunGit("rev-parse \"@{u}:" + pth + "\"", 15000, out o, out e) == 0)
+                remoteHash = o.Trim();
+            if (localHash.Length == 0 || localHash != remoteHash) differ.Add(pth);
+        }
+        if (differ.Count > 0)
+            return differ.Count + " local file(s) in the logic apps repo block the update "
+                + "and differ from GitHub, so they were left alone: "
+                + string.Join(", ", differ.Take(3).ToArray())
+                + (differ.Count > 3 ? " …" : "") + ". Move or delete them, then ↻ REPULL.";
+
+        foreach (var pth in paths)
+        {
+            try { File.Delete(Path.Combine(top, pth.Replace('/', Path.DirectorySeparatorChar))); }
+            catch (Exception ex) { return "couldn't remove duplicate " + pth + ": " + ex.Message; }
+        }
+        return "";
     }
 
     // Run git in the repo folder and capture its output. repoPath is the working
     // directory so git finds the repo root even though repoPath is a subfolder.
+    // stderr is drained asynchronously so a chatty command can't deadlock on a
+    // full pipe buffer while we read stdout.
     int RunGit(string args, int timeoutMs, out string outp, out string err)
     {
         outp = ""; err = "";
@@ -3794,9 +3955,10 @@ class LogicAppsForm : Form
         };
         using (var p = Process.Start(psi))
         {
+            var errTask = p.StandardError.ReadToEndAsync();
             outp = p.StandardOutput.ReadToEnd();
-            err = p.StandardError.ReadToEnd();
             if (!p.WaitForExit(timeoutMs)) { try { p.Kill(); } catch { } return -1; }
+            err = errTask.Result;
             return p.ExitCode;
         }
     }
@@ -3837,9 +3999,8 @@ class LogicAppsForm : Form
     {
         if (subId.Length == 0)
         {
-            SetStatus("Repulled " + standardCount + " Standard workflows. "
-                + "Set AZURE_SUBSCRIPTION_ID in .env to also list Consumption apps."
-                + gitPullNote,
+            FinalStatus("Repulled " + standardCount + " Standard workflows. "
+                + "Set AZURE_SUBSCRIPTION_ID in .env to also list Consumption apps.",
                 standardCount > 0 ? Green : Red);
             return;
         }
@@ -3888,17 +4049,16 @@ class LogicAppsForm : Form
 
         if (timedOut)
         {
-            SetStatus("Repulled " + standardCount + " Standard workflows. Consumption "
-                + "query timed out after 120s — is az installed and logged in?"
-                + gitPullNote, Red);
+            FinalStatus("Repulled " + standardCount + " Standard workflows. Consumption "
+                + "query timed out after 120s — is az installed and logged in?", Red);
             return;
         }
         if (code != 0)
         {
             string msg = (err ?? "").Trim();
             if (msg.Length == 0) msg = "az exited " + code + ".";
-            SetStatus("Repulled " + standardCount + " Standard workflows. "
-                + "Consumption query failed: " + msg + gitPullNote, Red);
+            FinalStatus("Repulled " + standardCount + " Standard workflows. "
+                + "Consumption query failed: " + msg, Red);
             return;
         }
 
@@ -3921,7 +4081,7 @@ class LogicAppsForm : Form
         var standard = items.Where(i => !i.Consumption).ToList();
         items = Sort(standard.Concat(consumption).ToList());
         ApplyFilter();
-        SetStatus("Repulled " + Describe() + " from the repo and az." + gitPullNote, Green);
+        FinalStatus("Repulled " + Describe() + " from the repo and az.", Green);
     }
 
     // Case-insensitive substring filter; repopulates the ListBox and the count.

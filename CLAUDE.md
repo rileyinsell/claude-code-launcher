@@ -157,6 +157,26 @@ by type — Standard cyan, Consumption amber. Items are `LaItem` objects (name +
   and merge; if both are empty it auto-repulls once (which now also git-pulls).
   Needs an interactive `az login` for the Consumption half; the Standard half
   works offline (the git pull just fails harmlessly with no network).
+- **Staleness guards (2026-11-16, after the repo silently sat 120 commits behind and
+  `Servbank_Take_To_New_Lead` never showed):**
+  - **Freshness check on open** (`CheckFreshOnOpen`): a background `git fetch` +
+    `rev-list --count HEAD..@{u}` (`BehindCount`). Behind → full REPULL automatically.
+    Up to date or offline → `RescanStandardFromDisk()` (instant folder rescan, so a repo
+    updated outside the launcher can't hide behind a stale cache). Offline shows amber.
+  - **Self-heal for "untracked working tree files would be overwritten"**
+    (`ClearIdenticalUntracked`): this git error was the original cause (local copies of
+    `sessions/*.md` that GitHub also added). Each blocking file is compared by git blob
+    hash (`hash-object` vs `rev-parse @{u}:path`, so CRLF settings don't matter); only if
+    ALL are identical are they deleted and the pull retried. Any file that differs is left
+    untouched and named in the warning.
+  - **Loud warnings**: `gitPullNote` now goes FIRST in the status (via `FinalStatus`) and
+    turns green to amber; after any pull, `BehindCount` confirms the repo is level with
+    GitHub. The status label is 3 lines tall (was 1, which truncated the note).
+  - `RunGit` drains stderr asynchronously (avoids a pipe-buffer deadlock).
+  - Test harness pattern: a console exe that `Assembly.LoadFrom`s DevLauncher.exe, creates
+    `LogicAppsForm` by reflection and prints the `status` label - with its own `.env`
+    next to it pointing at a throwaway bare-repo + behind clone. Scenarios covered:
+    identical duplicate (heals), differing duplicate (kept, amber), up to date, offline.
 - **Config is `.env`-only** — nothing sensitive is compiled into the source. The
   literals passed to `Env.Get(...)` are non-secret fallbacks (empty for the
   Azure ids), so a missing `.env` degrades gracefully: Standard needs the repo
